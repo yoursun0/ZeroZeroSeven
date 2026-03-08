@@ -28,7 +28,53 @@ const firebaseConfig = {
 };
 ```
 
-## Game Logic Overview
+## Core Refactoring Rules for Copilot
+Incremental Changes: Do NOT rewrite the entire application at once. Follow the step-by-step prompts below. I will ask for these steps one by one.
+
+Preserve Game Logic: Keep the core game rules, resolveActions(), and Tailwind UI as intact as possible.
+
+Vanilla JS Only: Do not introduce React, React Native, Vue, or Webpack. Stick to Vanilla JS and CDN imports. Use ES6 modules (<script type="module">).
+
+## Step-by-Step Transformation Prompts
+
+Step 1: File Modularization
+Prompt: "Please split the current monolithic index.html. Extract the inline JavaScript into a separate game.js file, and extract the custom <style> block into a style.css file. Make sure game.js is imported as an ES6 module (<script type="module" src="game.js"></script>). Ensure the local game still works perfectly after this split."
+
+Step 2: Firebase SDK Integration & Auth Initialization
+Prompt: "Please import the Firebase v10 Modular SDKs (App, Auth, and Database) via CDN into game.js. Using the firebaseConfig provided in copilot-instructions.md, initialize the Firebase app. Implement a function to perform Anonymous Authentication (signInAnonymously) on page load. Log the user's uid to the console."
+
+Step 3: Implement Lobby & Room System UI
+Prompt: "Create a new 'Lobby' UI section in index.html (hide #setup-screen and #game-ui initially).
+
+Add a 'Create Room' button.
+
+Add a 'Join Room' input field and button.
+
+When 'Create Room' is clicked, generate a random 4-character alphanumeric Room ID, save it to Firebase under rooms/{roomId}, make the current user the 'Host', and join the room.
+
+When 'Join Room' is clicked, validate the Room ID and add the current user to rooms/{roomId}/players.
+
+Display the Room ID and the list of connected players in the UI, listening to Firebase for real-time player updates."
+
+Step 4: Sync Player State & Ready Mechanism
+Prompt: "Remove the old local player setup logic. Update the logic so that players data is driven entirely by Firebase (rooms/{roomId}/players). Add a 'Ready' button for clients and a 'Start Game' button for the Host. When the Host clicks 'Start Game', update a gameState flag in Firebase. All clients should listen to this flag to transition from the Lobby UI to the #game-ui arena."
+
+Step 5: Online Action Submission (Client-Side)
+Prompt: "Refactor handleInput(pIdx, action). Instead of resolving the game immediately when actions are clicked, clients should write their chosen action (and target, if shooting) to Firebase under rooms/{roomId}/players/{uid}/currentAction. Show a 'Waiting for others...' UI overlay for that player until all players have submitted their actions."
+
+Step 6: Serverless Turn Resolution (Host-Side)
+Prompt: "Implement the Host-based turn resolution.
+
+Only the Host's client should listen for all players' actions.
+
+When the Host detects that all alive players have submitted an action, the Host triggers the existing resolveActions() function locally.
+
+The Host then writes the updated game state (bullets, isAlive, new beat count) and action history back to Firebase.
+
+All clients (including the Host) should listen to these state changes, trigger their local animations/UI updates, and clear their action selections for the next turn."
+
+
+## Existing Game Logic Overview
 - Single-browser, turn-based local multiplayer HTML5 game titled “007 入子彈”.
 - Implemented in a single `index.html` file using vanilla JS and Tailwind for styling.
 
