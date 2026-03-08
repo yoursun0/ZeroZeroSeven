@@ -1,3 +1,8 @@
+// Firebase imports
+import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js';
+import { getAuth, signInAnonymously } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js';
+import { getDatabase } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-database.js';
+
 const emojis = ["🕵️", "🕶️", "💼", "🧨", "🚔", "🔫", "🎯", "🥷"];
 let players = [];
 let currentBeat = 9;
@@ -331,3 +336,28 @@ function checkGameEnd() {
 window.resetToMenu = resetToMenu;
 window.handleInput = handleInput;
 window.closeTargetModal = closeTargetModal;
+
+// Firebase configuration
+const firebaseConfig = {
+  apiKey: "AIzaSyAsowaXjAhhoOnge5fjzb0UrMwvTzZfSKE",
+  authDomain: "minigame-b258e.firebaseapp.com",
+  databaseURL: "https://minigame-b258e-default-rtdb.asia-southeast1.firebasedatabase.app",
+  projectId: "minigame-b258e",
+  storageBucket: "minigame-b258e.firebasestorage.app",
+  messagingSenderId: "1073020133596",
+  appId: "1073020133596"
+};
+
+// Initialize Firebase
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const database = getDatabase(app);
+
+// Perform anonymous authentication on page load
+signInAnonymously(auth)
+  .then((userCredential) => {
+    console.log('Anonymous user UID:', userCredential.user.uid);
+  })
+  .catch((error) => {
+    console.error('Anonymous sign-in error:', error);
+  });
