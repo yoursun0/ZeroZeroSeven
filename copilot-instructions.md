@@ -1,6 +1,34 @@
-# Copilot Instructions — 007 入子彈
+# Copilot Instructions — 007 入子彈 (Online Multiplayer Transformation)
 
-Overview
+## Project Objective
+The current project is a single-browser, turn-based local multiplayer HTML5 game implemented entirely in `index.html` using vanilla JS and Tailwind CSS. 
+The goal is to transform this into a **Serverless Online Multiplayer Web App** using **Firebase Realtime Database** for state synchronization and **Firebase Anonymous Authentication** for user identity.
+
+## Tech Stack & Architecture
+- **Frontend**: Vanilla JavaScript (ES6 Modules), HTML5, Tailwind CSS (via CDN).
+- **Backend/State Sync**: Firebase Realtime Database (via v10 Modular SDK CDN).
+- **Authentication**: Firebase Anonymous Auth.
+- **Hosting**: Firebase Hosting.
+- **Architecture Paradigm**: Serverless / Host-Client model. One player creates a room and acts as the "Host" (responsible for running the game resolution logic), while others act as "Clients" (submitting actions and listening for state changes).
+
+---
+
+## My Firebase Configuration
+*Copilot: Please use this configuration when initializing Firebase in the codebase.*
+
+```javascript
+const firebaseConfig = {
+  apiKey: "AIzaSyAsowaXjAhhoOnge5fjzb0UrMwvTzZfSKE",
+  authDomain: "minigame-b258e.firebaseapp.com",
+  databaseURL: "https://minigame-b258e-default-rtdb.asia-southeast1.firebasedatabase.app",
+  projectId: "minigame-b258e",
+  storageBucket: "minigame-b258e.firebasestorage.app",
+  messagingSenderId: "1073020133596",
+  appId: "1073020133596"
+};
+```
+
+## Game Logic Overview
 - Single-browser, turn-based local multiplayer HTML5 game titled “007 入子彈”.
 - Implemented in a single `index.html` file using vanilla JS and Tailwind for styling.
 
@@ -54,10 +82,3 @@ Potential issues or improvement areas
 - UI accessibility: keyboard controls and clearer disabled states for unavailable actions (e.g., shoot when bullets=0) could be improved.
 - Move JS into modules and split markup into small templates for maintainability.
 - Add unit tests for `resolveActions()` and multi-shot scenarios.
-
-How Copilot should help (suggested prompts)
-- "Refactor `resolveActions()` into smaller functions and add unit tests covering multi-attacker scenarios." 
-- "Add keyboard controls for human players and make controls responsive for mobile." 
-- "Add an optional deterministic AI strategy mode (aggressive, defensive)." 
-
-File created: copilot-instructions.md
