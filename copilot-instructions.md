@@ -13,21 +13,6 @@ The goal is to transform this into a **Serverless Online Multiplayer Web App** u
 
 ---
 
-## My Firebase Configuration
-*Copilot: Please use this configuration when initializing Firebase in the codebase.*
-
-```javascript
-const firebaseConfig = {
-  apiKey: "AIzaSyAsowaXjAhhoOnge5fjzb0UrMwvTzZfSKE",
-  authDomain: "minigame-b258e.firebaseapp.com",
-  databaseURL: "https://minigame-b258e-default-rtdb.asia-southeast1.firebasedatabase.app",
-  projectId: "minigame-b258e",
-  storageBucket: "minigame-b258e.firebasestorage.app",
-  messagingSenderId: "1073020133596",
-  appId: "1073020133596"
-};
-```
-
 ## Core Refactoring Rules for Copilot
 Incremental Changes: Do NOT rewrite the entire application at once. Follow the step-by-step prompts below. I will ask for these steps one by one.
 
