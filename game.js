@@ -660,6 +660,8 @@ function showLobbyUI() {
         document.getElementById('create-room-btn').disabled = true;
         document.getElementById('created-room-info').classList.remove('hidden');
         document.getElementById('room-id-display').textContent = currentRoomId;
+        // Initialize player config list when host enters lobby
+        updateLobbyPlayerConfigList();
     } else {
         document.getElementById('player-setup-section').classList.add('hidden');
     }
@@ -738,17 +740,32 @@ async function markPlayerReady() {
     readyBtn.classList.toggle('text-black', !readyStatus);
 }
 
-async function startGameAsHost() {    if (!isHost || !currentRoomId) return;
+async function startGameAsHost() {    if (!isHost || !currentRoomId) {
+        console.error('❌ Cannot start game: isHost=' + isHost + ', currentRoomId=' + currentRoomId);
+        return;
+    }
 
     try {
         console.log('🎮 HOST: Starting game, setting gameState to playing...');
         
         // Collect player type configs from lobby UI
         const typeInputs = document.querySelectorAll('.p-type-lobby');
+        console.log('📋 HOST: Found ' + typeInputs.length + ' type inputs');
+        
+        const playerCount = parseInt(document.getElementById('player-count-lobby').value);
+        console.log('📋 HOST: Player count from slider: ' + playerCount);
+        
+        if (typeInputs.length === 0) {
+            console.error('❌ No player type inputs found! Player config list not populated');
+            alert('Please set player types. Refresh the page and try again.');
+            return;
+        }
+        
         const playerTypes = {};
         typeInputs.forEach((input, idx) => {
             playerTypes[idx] = input.value; // 'human' or 'ai'
         });
+        console.log('🔧 HOST: Player types collected:', playerTypes);
         
         // Update game state in Firebase along with player types
         await update(ref(database, `rooms/${currentRoomId}`), {
@@ -756,19 +773,24 @@ async function startGameAsHost() {    if (!isHost || !currentRoomId) return;
             playerTypes: playerTypes,
             turnStartTime: Date.now()
         });
+        console.log('✅ HOST: Firebase room data updated');
         
         // Create Firebase entries for AI players
         const playersRef = ref(database, `rooms/${currentRoomId}/players`);
         const playersSnapshot = await get(playersRef);
         const existingPlayers = playersSnapshot.val() || {};
-        const playerCount = parseInt(document.getElementById('player-count-lobby').value);
+        console.log('👥 HOST: Existing players:', Object.keys(existingPlayers));
         
         for (let i = 0; i < playerCount; i++) {
             if (playerTypes[i] === 'ai' && !existingPlayers[`ai-${i}`]) {
+                // Get nickname for AI player
+                const nickInputs = document.querySelectorAll('.p-nick-lobby');
+                const aiName = nickInputs[i]?.value || `玩家 ${i+1}`;
+                
                 // Create AI player entry
                 await set(ref(database, `rooms/${currentRoomId}/players/ai-${i}`), {
                     uid: `ai-${i}`,
-                    name: document.querySelectorAll('.p-nick-lobby')[i]?.value || `玩家 ${i+1}`,
+                    name: aiName,
                     emoji: emojis[i],
                     type: 'ai',
                     ready: true,
@@ -777,17 +799,14 @@ async function startGameAsHost() {    if (!isHost || !currentRoomId) return;
                     currentAction: null,
                     currentTarget: null
                 });
-                console.log(`🧀 HOST: Created AI player ai-${i}`);
+                console.log(`🧀 HOST: Created AI player ai-${i} (${aiName}`);
             }
         }
         
-        console.log('✅ HOST: gameState updated to playing with player types:', playerTypes);
-        
-        // Also fetch and confirm it was written
-        const verify = await get(ref(database, `rooms/${currentRoomId}/gameState`));
-        console.log('✅ HOST: Verified gameState in DB:', verify.val());
+        console.log('✅ HOST: All player setup complete. Game starting...');
     } catch (error) {
         console.error('❌ Error starting game:', error);
+        alert('Error starting game: ' + error.message);
     }
 }
 
@@ -812,8 +831,9 @@ function startMultiplayerGame() {
             return;
         }
         console.log('📦 Room data fetched:', roomData);
-        startBeat = roomData.timerSetting;
-        showBulletCount = roomData.showBullets;
+        startBeat = roomData.timerSetting || 9;
+        showBulletCount = roomData.showBullets !== undefined ? roomData.showBullets : true;
+        const playerTypes = roomData.playerTypes || {}; // Load player types from room
 
         // Fetch players data
         const playersRef = ref(database, `rooms/${currentRoomId}/players`);
