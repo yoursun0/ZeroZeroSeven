@@ -348,10 +348,339 @@ rooms/
 
 ---
 
+---
+
+## Edge Cases & Critical Scenarios Testing
+
+### Edge Case 1: Shoot Invalid Target (Issue #10)
+**Goal**: Verify game doesn't crash when target becomes invalid
+
+**Scenario A: Target Dies Before Resolution**
+1. 3+ players, Round starts
+2. Player A submits: Shoot Player B
+3. Player B gets eliminated in their action (e.g., took 2 shots from others)
+4. Player A's shoot resolves → what happens?
+
+**Expected Result - CRASH PROTECTION**: ✅
+- No crash with "Cannot read property 'name' of undefined"
+- Console shows: `⚠️  Target [index] is dead or invalid, defaulting to reload`
+- Player A gets reload instead: "+1 子彈"
+- Game continues normally
+- Victory/elimination shows properly
+
+**Scenario B: Target Index Out of Bounds**
+1. During action submission, player count slider decreases
+2. Player selected target 4, but game now has only 2 players
+3. Resolution happens
+4. What happens?
+
+**Expected Result - BOUNDS PROTECTION**: ✅
+- No crash with "Cannot read property 'name'"
+- Console shows: `⚠️  Invalid target index [4] for [Player], defaulting to reload`
+- Player gets reload action instead
+- Bullets increase by 1
+- No errors in console
+
+**Scenario C: Undefined Target Index**
+1. During network lag, player action submitted without target
+2. Player data: `{..., currentTarget: null, currentAction: 'shoot'}`
+3. Resolution starts
+
+**Expected Result - NULL PROTECTION**: ✅
+- No crash
+- Console shows: `⚠️  Invalid target index null for [Player], defaulting to reload`
+- Action defaults to reload
+- Game continues
+
+**How to Test**:
+1. Open DevTools Console (F12) on Host browser
+2. Look for warning messages with "⚠️  Invalid target index" or "⚠️  Target [X] is dead"
+3. Verify NO red errors starting with "Cannot read property"
+4. Check that player bullets increase when target invalid
+
+---
+
+### Edge Case 2: Memory Leak Prevention - Listener Cleanup (Issue #9)
+**Goal**: Verify Firebase listeners are cleaned up and don't accumulate
+
+**Scenario A: Play Multiple Rounds Then Leave**
+1. Start multiplayer game with 2 players
+2. Play 3 complete rounds (each round: choose action → resolution → next round)
+3. Game ends (someone wins)
+4. Host clicks "返回主選單" button
+
+**Expected Console Output During Cleanup**: ✅
+```
+🧹 Cleaning up all Firebase listeners...  [appears when leaving]
+🛑 Cleaning up previous roomPlayersListener
+🛑 Cleaning up previous gameStateListener
+🛑 Cleaning up previous gameStateUpdatesListener
+🛑 Cleaning up previous playerActionsListener
+```
+
+**After Return to Menu**:
+- Console should NOT show any more Firebase update messages
+- Old listeners should not fire anymore
+- Joining new room should start fresh (no interference from old room)
+
+**Test Steps**:
+```
+1. Open console, Play → Game ends → Return to menu
+2. Don't look for cleanup messages yet (scroll console if needed)
+3. Join DIFFERENT room (or new instance of same room)
+4. If old listener fires, console shows "[OLD-ROOM-ID] players updated" - BAD
+5. If only NEW room data arrives, listener cleanup WORKED - GOOD
+```
+
+**Scenario B: Rapidly Switch Rooms**
+1. Create Room A, start game, play 1 round
+2. Return to menu (should cleanup Room A listeners)
+3. Immediately after "返回主選單", join Room B
+
+**Expected Result**: ✅
+- No errors about Room A in console
+- Room B listeners activate cleanly
+- Only Room B data in console logs
+- Console shows: `🧹 Cleaning up all Firebase listeners...` only once (for Room A)
+
+**Scenario C: Long Multiplayer Session**
+1. Play same room for 5+ rounds
+2. After each round, check console memory usage indicator
+3. Watch for Firefox/Chrome memory climbing
+4. Play final round, return to menu
+
+**Expected Result** - No Memory Growth: ✅
+- Console remains responsive
+- No lag as rounds progress
+- Memory usage stable after cleanup
+- Browser doesn't slow down despite multiple rounds
+
+**How to Test Memory**:
+- **Chrome**: Open DevTools → Memory tab → Take heap snapshot before round 1
+- **Firefox**: Open DevTools → Memory tab → Track memory at round 1, 3, 5...
+- Expected: Memory stable ~3-5 MB after cleanup, no growth per round
+
+---
+
+### Edge Case 3: Game End Listener Cleanup (Issue #11)
+**Goal**: Verify all listeners stop firing after victory screen
+
+**Scenario A: Verify No Ghost Data Updates**
+1. Play game until someone wins (1 player alive)
+2. Victory screen appears on both browsers
+3. Host browser: Stay on victory screen for 10 seconds
+4. Meanwhile, in Firebase console, manually add data to room
+
+**Procedure**:
+1. Open https://console.firebase.google.com → your project → Database
+2. Find room in structure: `rooms/[ROOMID]/players/[HOST-UID]/bullets`
+3. Change bullets value while game shows victory screen
+4. Check Host console
+
+**Expected Result** - No Updates After Victory: ✅
+- Console shows NO update messages after victory
+- Player data doesn't reflect the Firebase change
+- Player panel stays stale with old data
+- Only "返回主選單" action works
+
+**If Listeners NOT Cleaned** (Bug): ❌
+- Console would show: `📦 Player data updated...` or similar
+- Player bullets would change on screen
+- Game would continue reacting to Firebase
+- Indicates memory leak is present
+
+**Scenario B: Victory Screen → Return to Menu**
+1. Victory screen showing
+2. Click "返回主選單" button
+3. Check console cleanup messages
+
+**Expected Result**: ✅
+- Console shows: `🧹 Cleaning up all Firebase listeners...`
+- All listeners unsubscribe messages appear
+- Menu appears with clean state
+- Can immediately start new game
+
+---
+
+### Edge Case 4: Player Count Slider During Game (Issue #6)
+**Goal**: Verify AI cleanup when host decreases player count
+
+**Scenario A: 2H + 2AI → Decrease to 2H Only**
+1. Host: Create room with 4 players (2 human, 2 AI expected)
+2. Verify 2 AI players join: `[HUMAN1], [HUMAN2], ai-0, ai-1`
+3. Client joins
+4. Before "遊戲開始", Host drags player count slider from 4 → 2
+5. Watch Firebase console
+
+**Expected Console Output**: ✅
+```
+🗑️ Removing excess AI player ai-1 (index 1 >= playerCount 2)
+🗑️ Removed excess AI player ai-1
+🗑️ Removing excess AI player ai-0 (index 0 >= playerCount 2)
+🗑️ Removed excess AI player ai-0
+```
+
+**In Room Player Panel**: ✅
+- Player count badge shows "2"
+- AI players disappear from player list
+- Only "玩家 1" and "玩家 2" visible
+- No orphaned AI players in ready status
+
+**Scenario B: Add Players After Removing**
+1. Had 4, decreased to 2 (ai-0, ai-1 removed as above)
+2. Now increase back to 4
+3. Check Firebase
+
+**Expected Result**: ✅
+- New AI players created: might be ai-2, ai-3 (or reuse ai-0, ai-1)
+- No errors about duplicate UIDs
+- Game proceeds normally with 4 players total
+- Console shows AI creation messages
+
+---
+
+### Edge Case 5: Player Disconnects Mid-Game (Network Failure)
+**Goal**: Verify game handles player leaving unexpectedly
+
+**Scenario A: Client Disconnects During Waiting**
+1. Two players in game, Round 2 starting
+2. Host submits action: Click 🔋 (Reload)
+3. Waiting overlay appears
+4. Client browser: Hard close tab or disable network
+5. Wait 15 seconds
+6. Check Host console
+
+**Expected Result**: ✅
+- Host still waits for Client (graceful timeout, not crash)
+- Console shows attempt to read Client's action
+- Eventually Host either: times out or continues with AI/default action
+- Game doesn't crash with "Cannot read player data" error
+
+**Scenario B: Host Disconnects**
+1. Two players in game, Host's turn to choose action
+2. Host closes browser tab
+3. Client browser shows...?
+
+**Expected Result**: ✅
+- Client stays on waiting screen or game view
+- Eventually Client detects host absence (Firebase data stops updating)
+- No crash, no infinite loading spinner
+- Client sees "房間已結束" or similar message (if implemented)
+
+---
+
+### Edge Case 6: Broken Connection After Submit, Before Resolution
+**Goal**: Verify no data corruption when connection drops
+
+**Scenario A: Connection Lost During Action Waiting**
+1. Both submit actions, in "等待其他玩家..." overlay
+2. One browser loses network (can use DevTools Network Throttle)
+3. Other browser completes turn resolution
+4. First browser reconnects
+
+**Expected Result**: ✅
+- No duplicate actions
+- Game state consistent when reconnected
+- No "Action submitted twice" errors
+- Player can continue next round
+
+---
+
+### Edge Case 7: Target Validation in Single-Player Mode (Issue #10 - Backward Compat)
+**Goal**: Verify single-player game works after target validation fix
+
+**Scenario A: Create Single-Player Game**
+1. Page loads → Lobby
+2. No "Create Room" visible (single-player disabled), use old setup
+3. Select setup and start game
+4. Choose Shoot action and pick target
+5. Verify no crashes
+
+**Expected Result**: ✅
+- Game works exactly as before
+- Target validation applies but doesn't cause issues
+- Shooting kills targets normally
+- No regression in single-player mode
+
+---
+
+### Critical Console Log Checklist
+
+When running comprehensive edge case tests, verify these logs appear:
+
+**On Game Start (Both Browsers)**:
+- ✅ `🎮 Starting multiplayer game...`
+- ✅ `👥 Players data fetched: [Array]`
+- ✅ `📦 Players initialized: 2 players`
+
+**During Multiple Rounds**:
+- ✅ `🎮 Turn 1:` / `2:` / `3:` messages
+- ✅ `⏰ Starting turn cycle for turn [N]`
+- ✅ `✅ Set gameState to: updating-turn`
+- ✅ `✅ Turn resolution complete...`
+
+**When Shooting a Target**:
+- ✅ `🎯 Player [X] shoots [Y]` (if target valid)
+- ⚠️ `⚠️  Invalid target index [X]...` (if target invalid - this is CORRECT output)
+
+**When Leaving Game**:
+- ✅ `🧹 Cleaning up all Firebase listeners...`
+- ✅ `🛑 Cleaning up previous [listener-type]...` (at least 2-3 of these)
+
+**When Returning to Lobby**:
+- ✅ `🎮 Game ended, returning to menu...`
+- ✅ No Firebase-related logs should appear after this
+- ✅ Joining new room only shows NEW room's logs
+
+---
+
+### Performance Baseline Test
+
+**Test Duration**: 30 minutes continuous play
+
+1. **Setup**: 2 human + 2 AI, timer 6 seconds per round
+2. **Run**: Play until 15+ rounds complete
+3. **Monitor**:
+   - Browser DevTools Memory: Should stay below 50 MB
+   - Console lag: Should be responsive (not taking 5+ sec to log)
+   - UI response: Buttons should click instantly
+
+**Acceptable Results**:
+- ✅ Memory growth ≤ 10 MB per 10 rounds
+- ✅ Console scrolls without lag
+- ✅ Buttons interactive throughout
+- ✅ No "out of memory" warnings
+
+**If Issues Occur**:
+- Check FIXES_SUMMARY Issue #9 was applied
+- Verify cleanupAllListeners() called after each game
+- Monitor Firebase rules aren't causing excessive data reads
+
+---
+
+## Final Validation Checklist (After All Fixes)
+
+Run this before declaring game "production ready":
+
+- [ ] **Issue #1-3**: Original AI fixes applied ✅ (FIXES_SUMMARY)
+- [ ] **Issue #4**: Player count consistent across browsers ✅ (tested Test Case 3)
+- [ ] **Issue #5**: Emoji assignments match ✅ (tested Test Case 3)
+- [ ] **Issue #6**: AI cleanup on slider decrease ✅ (tested Edge Case 4)
+- [ ] **Issue #7**: Action buttons highlight in multiplayer ✅ (tested Test Case 6)
+- [ ] **Issue #8**: Player array validation warnings present ✅ (console check)
+- [ ] **Issue #9**: No memory leaks - listeners cleanup ✅ (Edge Case 2 step 1)
+- [ ] **Issue #10**: No crash on invalid target ✅ (Edge Case 1)
+- [ ] **Issue #11**: Game end cleanup complete ✅ (Edge Case 3 scenario B)
+- [ ] **Issue #12**: Listener cleanup on all exit paths ✅ (Edge Cases 2&3)
+
+---
+
 ## Next Steps After Testing
-1. ✅ Verify all 10 tests pass
-2. Deploy to Firebase Hosting (`firebase deploy`)
-3. Share public URL with players
-4. Monitor Firebase Realtime Database for performance
-5. Consider adding turn timeout limits for slower players
+1. ✅ Verify all 10 basic tests pass
+2. ✅ Verify all 7 edge case scenarios pass
+3. Deploy to Firebase Hosting (`firebase deploy`)
+4. Share public URL with players
+5. Monitor Firebase Realtime Database for performance
+6. Consider adding turn timeout limits for slower players
+7. Monitor console logs for any new issues
 

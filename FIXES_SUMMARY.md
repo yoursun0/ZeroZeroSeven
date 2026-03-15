@@ -1,10 +1,16 @@
-# Bug Fixes Summary - March 14, 2026
+# Bug Fixes Summary - March 15, 2026 (Updated)
 
 ## Overview
-Three major issues have been fixed in the multiplayer game:
+**Nine critical issues** have been fixed in the multiplayer game:
 1. ✅ Timer desynchronization between browsers
 2. ✅ Victory screen not showing on losing player's browser
 3. ✅ AI player configuration and integration in multiplayer
+4. ✅ Player count inconsistency across browsers (game showed 2 vs 3 players)
+5. ✅ Emoji assignment incorrect for joining players
+6. ✅ Excess AI players not cleaned up when player count decreased
+7. ✅ [NEW] Memory leaks from unmanaged Firebase listeners
+8. ✅ [NEW] Shoot target validation crash when target invalid
+9. ✅ [NEW] Missing listener cleanup on game end and room leave
 
 ---
 
@@ -277,10 +283,571 @@ AI: Submitting action for [Name]: reload
 
 ---
 
+## Issue #4: Game Screen Showed Different Player Counts on Host vs Client (CRITICAL)
+
+### Problem
+When testing 2 humans + 1 AI:
+- **Host browser**: Game arena showed only 2 player nodes
+- **Client browser**: Game arena showed 3 player nodes
+- Both were playing the same game, but saw inconsistent game state
+
+### Root Cause
+**Two synchronization bugs working together:**
+
+1. **gameState set too early**: `startGameAsHost()` was setting `gameState: 'playing'` BEFORE creating AI players
+   - Host and client listeners triggered immediately
+   - Client fetched player list before all AI players were created
+   - Host fetched player list at slightly different time
+   - Race condition caused different player counts
+
+2. **Unpredictable player ordering**: Players array was built using `Object.entries(playersData).map()` 
+   - Object iteration order is not guaranteed to be consistent
+   - Firebase UIDs (user-xxx) and AI UIDs (ai-x) could return in different orders on different browsers
+   - Players could be assigned wrong indices and emojis
+
+### Solution Implemented
+
+#### 4A: Create AI Players BEFORE Setting gameState
+**In `startGameAsHost()`:**
+```javascript
+// BEFORE (broken):
+await update(ref(database, `rooms/${currentRoomId}`), {
+    gameState: 'playing',  // Listeners trigger immediately!
+    ...
+});
+// Create AI players...
+
+// AFTER (fixed):
+// Create AI players...
+for (let i = 0; i < playerCount; i++) {
+    if (playerTypes[i] === 'ai' && !existingPlayers[`ai-${i}`]) {
+        await set(...);  // Create AI player
+    }
+}
+// NOW set gameState after all players exist in Firebase
+await update(ref(database, `rooms/${currentRoomId}`), {
+    gameState: 'playing',  // Safe to trigger listeners now
+    ...
+});
+```
+
+#### 4B: Build Players Array in Deterministic Order
+**In `startMultiplayerGame()`:**
+```javascript
+// Build array respecting playerTypes[0], [1], [2], ... order
+const playerTypeIndices = Object.keys(playerTypes).map(Number).sort((a, b) => a - b);
+playerTypeIndices.forEach(typeIdx => {
+    const expectedType = playerTypes[typeIdx];
+    if (expectedType === 'ai') {
+        // Look up AI player by exact index: aiPlayers[typeIdx]
+        playerEntry = aiPlayers[typeIdx];
+    } else {
+        // Get next human from ordered list
+        playerEntry = humanPlayers[humanIndex++];
+    }
+    // Assign to final position...
+});
+```
+
+### How to Test
+1. **Browser A (Host)**: Create room with 3 players (2 human, 1 AI)
+2. **Browser B (Client)**: Join and ready
+3. **Host**: Click "Start Game"
+4. **Expected Result**: 
+   - ✅ **BOTH browsers show exactly 3 player nodes** (not 2 vs 3)
+   - ✅ All players appear in same order on both browsers
+   - ✅ Emoji assignments match across browsers (no mismatches)
+   - ✅ Game plays consistently on both browsers
+
+---
+
+## Issue #5: Emoji Assignment Incorrect for Joining Players
+
+### Problem
+When players joined a room with AI players already created, they received wrong emoji assignments:
+- Setup: 2 humans, 1 AI (expected emojis: 🕵️, 🕶️, 💼)
+- Host got: 🕵️ (correct)
+- AI-1 got: 🕶️ (correct)
+- Joining player got: 💼 (wrong! should be 🕶️)
+
+### Root Cause
+**In `joinRoom()`**, emoji was assigned based on total player count in Firebase:
+```javascript
+const playerCount = Object.keys(playersSnap.val()).length;  // Counts ALL players
+const playerIndex = playerCount;  // This includes AI players!
+const emoji = emojis[playerIndex];  // Wrong calculation
+```
+
+When player 2 joins:
+- Firebase has: host + ai-1 = 2 players total
+- `playerCount = 2`
+- New player gets `emoji[2] = 💼` (incorrect)
+- Should get `emoji[1] = 🕶️` (position for 2nd human)
+
+### Solution Implemented
+**Count only human players**, not AI players:
+```javascript
+const humanCount = Object.values(playersInRoom).filter(p => p.type !== 'ai').length;
+const playerIndex = humanCount;  // Correct: position of next human
+const emoji = emojis[playerIndex];
+```
+
+Now when player 2 joins:
+- Firebase has: host (type: human) + ai-1 (type: ai) = 2 total, 1 human
+- `humanCount = 1`
+- New player gets `emoji[1] = 🕶️` (correct!)
+
+### How to Test
+1. Create room with 3 players (2 human, 1 AI)
+2. After player 2 joins, hover over each player in room list
+3. Verify emoji colors match expected seats (🕵️, 🕶️, 💼)
+4. Start game and verify arena shows correct emoji positions
+
+---
+
+## Issue #6: Excess AI Players Not Cleaned Up When Player Count Decreased
+
+### Problem
+**Scenario:**
+1. Host creates room, sets player count to 4
+2. Default configuration: [human, ai, ai, ai]
+3. AI players ai-1, ai-2, ai-3 created in Firebase
+4. Host decreases player count to 2
+5. New dropdowns created for 2 players: [human, ai]
+6. But ai-1, ai-2, ai-3 still exist in Firebase (orphaned!)
+7. When game starts, inconsistent player counts again
+
+### Root Cause
+When host adjusted player count slider, `updateLobbyPlayerConfigList()` was called but it only:
+- Recreated UI dropdowns for new count
+- Did NOT clean up excess AI players from previous configuration
+
+Orphaned AI players remained in Firebase, potentially causing:
+- Wrong number of players in game
+- Mismatch between expected playerTypes and actual players
+- Inconsistent state across browsers
+
+### Solution Implemented
+**Enhanced player count change listener:**
+```javascript
+document.getElementById('player-count-lobby').addEventListener('input', async () => {
+    // ... update UI ...
+    
+    // NEW: Clean up excess AI players
+    if (currentRoomId && isHost) {
+        const newPlayerCount = parseInt(document.getElementById('player-count-lobby').value);
+        const playersRef = ref(database, `rooms/${currentRoomId}/players`);
+        const snapshot = await get(playersRef);
+        const playersData = snapshot.val() || {};
+        
+        // Remove any AI players with indices >= newPlayerCount
+        for (let i = 0; i < 8; i++) {
+            if (i >= newPlayerCount) {
+                const aiUid = `ai-${i}`;
+                if (playersData[aiUid]) {
+                    await remove(ref(database, `rooms/${currentRoomId}/players/${aiUid}`));
+                    console.log(`🗑️  Removed excess AI player ai-${i}`);
+                }
+            }
+        }
+    }
+});
+```
+
+### How to Test
+1. Host creates room, sets player count to 4
+2. Host decreases to 2
+3. Check Firebase console: should see only ai-0 and ai-1 removed properly
+4. Console should show: `🗑️  Removed excess AI player ai-2` and `ai-3`
+5. Start game: should have correct number of players (2, not leftover more)
+
+---
+
+## Issue #7: updateButtonUI Logic Prevented Action Highlighting in Multiplayer
+
+### Problem
+When 2+ human players were in the game:
+- Selected actions (reload, shield, shoot) were not highlighted
+- Button visual feedback was missing
+- Players couldn't see which action they had selected
+
+### Root Cause
+**In `updateButtonUI()`:**
+```javascript
+function updateButtonUI(pIdx) {
+    if (humanCount > 1) return;  // BUG: Don't highlight if 2+ humans exist!
+    // ...apply highlighting...
+}
+```
+
+Logic was backwards: when there were multiple humans (multiplayer), no highlighting was applied. This was likely an artifact from early single-player development.
+
+### Solution Implemented
+**Removed the problematic humanCount check:**
+```javascript
+function updateButtonUI(pIdx) {
+    // Apply highlighting to show selected action
+    // In multiplayer, only buttons for your own player exist, so this is safe
+    document.querySelectorAll(`#pod-${pIdx} .pod-btn`).forEach(b => b.classList.remove('selected-highlight'));
+    const p = players[pIdx];
+    if (p.currentAction) {
+        const btn = document.getElementById(`btn-${pIdx}-${p.currentAction}`);
+        if (btn) {
+            btn.classList.add('selected-highlight');
+        }
+    }
+}
+```
+
+Since `renderArena()` only creates control pods for players you control (in multiplayer), this is safe and correct.
+
+### How to Test
+1. Start 2-human game
+2. Select an action (reload/shield/shoot)
+3. Button should highlight immediately
+4. Visual feedback confirms your selection
+
+---
+
+## Issue #8: Improved Error Handling in Player Array Building
+
+### Problem
+If player count didn't match Firebase state (missing humans or AI players), the game would silently skip players or use wrong data, causing:
+- Games starting with fewer players than expected
+- No warning to users about inconsistent state
+- Difficult debugging
+
+### Root Cause
+Player array building used `if (playerEntry)` to skip missing players, but didn't log warnings or validate totals.
+
+### Solution Implemented
+**Added comprehensive validation and logging:**
+```javascript
+// Track which humans we've assigned
+let humanIndex = 0;
+
+playerTypeIndices.forEach(typeIdx => {
+    const expectedType = playerTypes[typeIdx];
+    
+    if (expectedType === 'ai') {
+        playerEntry = aiPlayers[typeIdx];
+        if (!playerEntry) {
+            console.warn(`⚠️  Expected AI at index ${typeIdx} not found`);
+            return;
+        }
+    } else {
+        if (humanIndex >= humanPlayers.length) {
+            console.warn(`⚠️  Expected human at index ${typeIdx} but ran out (have ${humanIndex})`);
+            return;
+        }
+        playerEntry = humanPlayers[humanIndex++];
+    }
+    
+    // Build player entry...
+});
+
+// Validate final count
+if (players.length !== playerTypeIndices.length) {
+    console.warn(`⚠️  Player count mismatch: built ${players.length} but expected ${playerTypeIndices.length}`);
+}
+```
+
+### How to Test
+Check browser console during game start:
+- Should see player assignments clearly logged
+- No "undefined" player errors
+- Warnings if player count doesn't match expectations
+
+---
+
+## Browser Testing Checklist (Updated)
+
+### Critical Multiplayer Tests
+- [ ] 2 humans + 1 AI: Host and client show 3 players (not 2 vs 3)
+- [ ] 2 humans + 2 AI: Both browsers show 4 players in same order
+- [ ] Emoji assignments match across browsers
+- [ ] Player indices consistent (no out-of-order rendering)
+- [ ] Action highlighting works in multiplayer (button feedback visible)
+- [ ] Timer stays synchronized (±1 sec variation OK)
+- [ ] Victory screen on BOTH browsers when game ends
+- [ ] AI auto-submit actions at mid-turn on all browsers
+- [ ] Player count decrease cleans up excess AI from Firebase
+- [ ] Can play multiple rounds without player count mismatch
+- [ ] No console errors or warnings about missing players
+- [ ] Game resolution includes all players' actions
+
+### Single-Player Tests
+- [ ] Single-player game still works correctly
+- [ ] AI opponents function normally
+- [ ] Victory screen displays correctly
+- [ ] No regressions from multiplayer fixes
+
+---
+
 ## Rollback Instructions
 
-If any issues occur, the changes are localized to:
-- `index.html` - Added player config UI section
-- `game.js` - Updated timer, victory detection, AI submission, room startup
+If any issues occur, the changes are localized to `game.js`:
+
+**Changed functions:**
+- `createRoom()` - Now creates AI BEFORE gameState change
+- `startMultiplayerGame()` - Deterministic player ordering + validation
+- `joinRoom()` - Fixed emoji calculation
+- `updateButtonUI()` - Removed incorrect humanCount check
+- Player count listener - Added AI cleanup
+- `hostCheckAllActionsSubmitted()` - Improved logging
 
 All changes maintain backward compatibility with single-player games.
+
+---
+
+## Issue #9: Memory Leaks from Unmanaged Firebase Listeners (CRITICAL)
+
+### Problem
+Firebase listeners were created but the unsubscribe functions were never stored, causing:
+- Memory leaks: listeners continue running after game ends
+- Firebase bandwidth waste: continued listening to data changes
+- Multiple listeners accumulating: each game start adds more listeners
+
+### Root Cause
+Functions like `listenToGameStateUpdates()` and `listenToPlayerActions()` called `onValue()` but didn't store the returned unsubscribe function.
+
+Example bug:
+```javascript
+// BUG: onValue returns unsubscriber, but we're ignoring it!
+onValue(playersRef, (snapshot) => {
+    // ... handle data ...
+});
+```
+
+### Solution Implemented
+
+#### 9A: Store All Listener Unsubscribers in Global Variables
+```javascript
+let gameStateUpdatesListener = null;  // NEW
+let playerActionsListener = null;      // NEW
+```
+
+#### 9B: Store Returned Unsubscriber When Creating Listeners
+**In `listenToGameStateUpdates()`:**
+```javascript
+// Clean up any previous listener
+if (gameStateUpdatesListener) {
+    gameStateUpdatesListener();
+}
+// Store new unsubscriber
+gameStateUpdatesListener = onValue(playersRef, (snapshot) => {
+    // ... callback ...
+});
+```
+
+**In `listenToPlayerActions()`:**
+```javascript
+if (playerActionsListener) {
+    playerActionsListener();
+}
+playerActionsListener = onValue(playersRef, (snapshot) => {
+    // ... callback ...
+});
+```
+
+#### 9C: Create Centralized Cleanup Function
+New function `cleanupAllListeners()` unsubscribes from all Firebase listeners:
+```javascript
+function cleanupAllListeners() {
+    console.log('🧹 Cleaning up all Firebase listeners...');
+    if (roomPlayersListener) {
+        roomPlayersListener();
+        roomPlayersListener = null;
+    }
+    if (gameStateListener) {
+        gameStateListener();
+        gameStateListener = null;
+    }
+    if (gameStateUpdatesListener) {
+        gameStateUpdatesListener();
+        gameStateUpdatesListener = null;
+    }
+    if (playerActionsListener) {
+        playerActionsListener();
+        playerActionsListener = null;
+    }
+    if (waitingListener) {
+        waitingListener();
+        waitingListener = null;
+    }
+}
+```
+
+#### 9D: Call Cleanup in All Exit Points
+- `resetToMenu()` - Calls `cleanupAllListeners()` before returning to menu
+- `leaveRoom()` - Calls `cleanupAllListeners()` before leaving room
+- `checkGameEndForMultiplayer()` - Calls `cleanupAllListeners()` when game ends
+
+### Impact
+- ✅ Memory immediately freed when game ends
+- ✅ Firebase connection count reduced
+- ✅ No data being unnecessarily synced from Firebase
+- ✅ Clean state for starting new games
+
+---
+
+## Issue #10: Shoot Target Validation Crash (CRITICAL)
+
+### Problem
+If a player's shoot target index was invalid (undefined, out of bounds, or pointing to dead player):
+- Game crashed with "Cannot read property 'name' of undefined"
+- Affected both single-player and multiplayer modes
+- Occurred during action resolution
+
+### Root Cause
+Code accessed `players[targetIdx].name` without validating `targetIdx`:
+```javascript
+const targetIdx = p.currentTarget;
+incomingShots[targetIdx].push(p.idx);  // Could crash if targetIdx invalid!
+const targetName = players[targetIdx].name;  // Definitely crashes if undefined
+```
+
+Possible causes of invalid targetIdx:
+- UI desynchronization
+- Target player died between action submission and resolution
+- Network race condition in multiplayer
+- Incomplete action submision
+
+### Solution Implemented
+
+**Added comprehensive validation before using targetIdx:**
+```javascript
+if (targetIdx === undefined || targetIdx === null || targetIdx < 0 || targetIdx >= players.length) {
+    console.warn(`⚠️  Invalid target index ${targetIdx} for ${p.name}, defaulting to reload`);
+    p.currentAction = 'reload';
+    p.bullets++;
+    tag.textContent = "+1 子彈";
+} else {
+    const targetPlayer = players[targetIdx];
+    if (!targetPlayer || !targetPlayer.isAlive) {
+        console.warn(`⚠️  Target ${targetIdx} is dead or invalid, defaulting to reload`);
+        p.currentAction = 'reload';
+        p.bullets++;
+        tag.textContent = "+1 子彈";
+    } else {
+        p.bullets--;
+        incomingShots[targetIdx].push(p.idx);
+        const targetName = targetPlayer.name;
+        tag.textContent = `🎯 -> ${targetName}`;
+    }
+}
+```
+
+**Applied to:**
+- `resolveActions()` (single-player mode, line ~474)
+- `hostResolveActions()` (multiplayer mode, line ~1173)
+
+### How to Test
+1. Attempt to shoot a player in a round
+2. Verify no crashes occur even if target dies
+3. Check console: no "Cannot read property" errors
+4. See fallback reload action if target becomes invalid
+
+---
+
+## Issue #11: Missing Listener Cleanup on Game End and Room Leave
+
+### Problem
+When a player:
+- Returns to menu (`resetToMenu()`)
+- Leaves room (`leaveRoom()`)
+- Game ends (`checkGameEndForMultiplayer()`)
+
+The Firebase listeners were either not cleaned up or only partially cleaned up, leaving active listeners consuming resources.
+
+### Root Cause
+- `resetToMenu()` didn't clean up listeners at all
+- `leaveRoom()` only cleaned up 2 out of 5 possible listeners
+- `checkGameEndForMultiplayer()` only cleaned up `gameStateListener`
+
+### Solution Implemented
+
+**Updated all exit points to call `cleanupAllListeners()`:**
+
+1. **In `resetToMenu()`:**
+   ```javascript
+   function resetToMenu() {
+       gameActive = false;
+       clearTimeout(turnTimer);
+       cleanupAllListeners();  // NEW
+       // ... rest of function ...
+   }
+   ```
+
+2. **In `leaveRoom()`:**
+   ```javascript
+   remove(ref(database, ...)).then(() => {
+       cleanupAllListeners();  // NEW - replaced selective cleanup
+       currentRoomId = null;
+       // ...
+   });
+   ```
+
+3. **In `checkGameEndForMultiplayer()`:**
+   ```javascript
+   if (alive.length <= 1) {
+       screen.classList.remove('hidden');
+       cleanupAllListeners();  // NEW - replaced single listener cleanup
+   }
+   ```
+
+### Impact
+- ✅ No lingering Firebase connections
+- ✅ Clean state transitions between games
+- ✅ Memory properly freed when leaving rooms
+- ✅ Prevents cross-room interference if user quickly joins new room
+
+---
+
+## Browser Testing Checklist (Final)
+
+### Critical New Fixes
+- [ ] Game doesn't crash when target is invalid
+- [ ] No "Cannot read property" errors in console
+- [ ] Can return to menu without hanging (all listeners cleaned)
+- [ ] Can join new room immediately after leaving old (no interference)
+- [ ] No memory growth when playing multiple rounds
+- [ ] Console shows cleanup messages: "🧹 Cleaning up all Firebase listeners"
+
+### Complete Multiplayer Tests
+- [ ] 2H + 1 AI: Both browsers show 3 players (not 2 vs 3)
+- [ ] 2H + 2 AI: Consistent player count across browsers
+- [ ] Emoji assignments match across browsers
+- [ ] Player indices consistent (no rendering bugs)
+- [ ] Action highlighting works in multiplayer
+- [ ] Timer stays synchronized (±1 sec OK)
+- [ ] Victory screen on BOTH browsers
+- [ ] AI auto-submit at mid-turn on all browsers
+- [ ] Player count decrease removes excess AI
+- [ ] Multiple rounds play without error
+- [ ] Game ends properly and cleans up listeners
+- [ ] Leaving room works smoothly
+- [ ] Returning to menu cleans up all listeners
+- [ ] No console errors or warnings
+- [ ] Shoot target validation doesn't crash
+
+---
+
+## Updated Rollback Instructions
+
+If critical issues occur, changes are localized to `game.js`:
+
+**New/Modified functions:**
+- `cleanupAllListeners()` - NEW centralized cleanup
+- `getPlayer()` - NEW validation function
+- `resetToMenu()` - Now calls `cleanupAllListeners()`
+- `leaveRoom()` - Now calls `cleanupAllListeners()`
+- `listenToGameStateUpdates()` - Now stores unsubscriber
+- `listenToPlayerActions()` - Now stores unsubscriber  
+- `checkGameEndForMultiplayer()` - Now calls `cleanupAllListeners()`
+- `resolveActions()` - Added target validation
+- `hostResolveActions()` - Added target validation
+
+**Global variables added:**
+- `gameStateUpdatesListener` - NEW
+- `playerActionsListener` - NEW

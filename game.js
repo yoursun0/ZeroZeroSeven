@@ -18,9 +18,12 @@ let currentUser = null;
 let currentRoomId = null;
 let isHost = false;
 let readyStatus = false;
+// Firebase listeners - store unsubscriber functions for cleanup
 let firebaseRoomListener = null;
 let roomPlayersListener = null;
 let gameStateListener = null;
+let playerActionsListener = null;  // NEW: Store host's action listener for cleanup
+let gameStateUpdatesListener = null;  // NEW: Store all clients' game state listener for cleanup
 
 const playerCountInput = document.getElementById('player-count');
 const timerSettingInput = document.getElementById('timer-setting');
@@ -90,6 +93,9 @@ function resetToMenu() {
     clearTimeout(turnTimer);
     document.body.classList.remove('playing');
     
+    // Clean up ALL Firebase listeners
+    cleanupAllListeners();
+    
     // If in a room, return to lobby. Otherwise return to setup
     if (currentRoomId) {
         document.getElementById('game-ui').classList.add('hidden');
@@ -106,6 +112,40 @@ function resetToMenu() {
         const arena = document.getElementById('game-arena');
         arena.querySelectorAll('.player-node, .control-pod').forEach(n => n.remove());
     }
+}
+
+// NEW: Centralized listener cleanup function
+function cleanupAllListeners() {
+    console.log('🧹 Cleaning up all Firebase listeners...');
+    if (roomPlayersListener) {
+        roomPlayersListener();
+        roomPlayersListener = null;
+    }
+    if (gameStateListener) {
+        gameStateListener();
+        gameStateListener = null;
+    }
+    if (gameStateUpdatesListener) {
+        gameStateUpdatesListener();
+        gameStateUpdatesListener = null;
+    }
+    if (playerActionsListener) {
+        playerActionsListener();
+        playerActionsListener = null;
+    }
+    if (waitingListener) {
+        waitingListener();
+        waitingListener = null;
+    }
+}
+
+// NEW: Validate player index to prevent crashes
+function getPlayer(pIdx) {
+    if (pIdx === undefined || pIdx === null || pIdx < 0 || pIdx >= players.length) {
+        console.warn(`⚠️  Invalid player index: ${pIdx} (valid range: 0-${players.length - 1})`);
+        return null;
+    }
+    return players[pIdx];
 }
 
 function renderArena() {
@@ -223,9 +263,9 @@ function runCountdown() {
         players.forEach(p => { 
             if (p.isAlive && p.type === 'ai') {
                 runAI(p);
-                // In multiplayer, submit AI action to Firebase
+                // In multiplayer, submit AI action to Firebase with AI's uid
                 if (currentRoomId && p.uid) {
-                    submitActionToFirebase(p.idx, p.currentAction, p.currentTarget);
+                    submitActionToFirebase(p.idx, p.currentAction, p.currentTarget, p.uid);
                 }
             }
         });
@@ -258,18 +298,21 @@ function handleInput(pIdx, action) {
         
         // In multiplayer, submit action to Firebase
         if (currentRoomId) {
-            submitActionToFirebase(pIdx, action, null);
+            submitActionToFirebase(pIdx, action, null, p.uid);
         }
     }
 }
 
-async function submitActionToFirebase(pIdx, action, target) {
-    if (!currentRoomId || !currentUser) return;
+async function submitActionToFirebase(pIdx, action, target, playerUid) {
+    if (!currentRoomId) return;
 
+    // Use provided uid, or for human players use currentUser.uid, or for AI use ai-{idx}
+    const uid = playerUid || currentUser?.uid || `ai-${pIdx}`;
     const player = players[pIdx];
-    console.log(`📤 CLIENT: Submitting action for ${player.name}: ${action}${target ? ' -> ' + players[target].name : ''}`);
+    
+    console.log(`📤 CLIENT: Submitting action for ${player.name} (uid: ${uid}): ${action}${target ? ' -> ' + players[target].name : ''}`);
     try {
-        await update(ref(database, `rooms/${currentRoomId}/players/${currentUser.uid}`), {
+        await update(ref(database, `rooms/${currentRoomId}/players/${uid}`), {
             currentAction: action,
             currentTarget: target || null
         });
@@ -347,12 +390,16 @@ function enableActionButtons() {
 }
 
 function updateButtonUI(pIdx) {
-    if (humanCount > 1) return;
+    // Apply highlighting to show selected action
+    // In multiplayer, only buttons for your own player exist, so this is safe
     document.querySelectorAll(`#pod-${pIdx} .pod-btn`).forEach(b => b.classList.remove('selected-highlight'));
     const p = players[pIdx];
     if (p.currentAction) {
         const btn = document.getElementById(`btn-${pIdx}-${p.currentAction}`);
-        if (btn) btn.classList.add('selected-highlight');
+        if (btn) {
+            btn.classList.add('selected-highlight');
+            console.log(`🎯 Action highlighted for ${p.name}: ${p.currentAction}`);
+        }
     }
 }
 
@@ -372,7 +419,7 @@ function openTargetModal(shooterIdx) {
                 
                 // In multiplayer, submit action to Firebase
                 if (currentRoomId) {
-                    submitActionToFirebase(shooterIdx, 'shoot', p.idx);
+                    submitActionToFirebase(shooterIdx, 'shoot', p.idx, players[shooterIdx].uid);
                 }
             };
             list.appendChild(btn);
@@ -424,11 +471,27 @@ async function resolveActions() {
             tag.textContent = "防禦";
             document.getElementById(`shield-${p.idx}`).classList.remove('hidden');
         } else if (p.currentAction === 'shoot') {
-            p.bullets--;
             const targetIdx = p.currentTarget;
-            incomingShots[targetIdx].push(p.idx);
-            const targetName = players[targetIdx].name;
-            tag.textContent = `🎯 -> ${targetName}`;
+            // NEW: Validate target index to prevent crash
+            if (targetIdx === undefined || targetIdx === null || targetIdx < 0 || targetIdx >= players.length) {
+                console.warn(`⚠️  Invalid target index ${targetIdx} for ${p.name}, defaulting to reload`);
+                p.currentAction = 'reload';
+                p.bullets++;
+                tag.textContent = "+1 子彈";
+            } else {
+                const targetPlayer = players[targetIdx];
+                if (!targetPlayer || !targetPlayer.isAlive) {
+                    console.warn(`⚠️  Target ${targetIdx} is dead or invalid, defaulting to reload`);
+                    p.currentAction = 'reload';
+                    p.bullets++;
+                    tag.textContent = "+1 子彈";
+                } else {
+                    p.bullets--;
+                    incomingShots[targetIdx].push(p.idx);
+                    const targetName = targetPlayer.name;
+                    tag.textContent = `🎯 -> ${targetName}`;
+                }
+            }
         }
         document.getElementById(`bullet-ui-${p.idx}`).textContent = p.bullets;
     });
@@ -605,9 +668,10 @@ async function joinRoom() {
         }
 
         const playersSnap = await get(ref(database, `rooms/${roomId}/players`));
-        const playerCount = playersSnap.exists() ? Object.keys(playersSnap.val()).length : 0;
+        const playersInRoom = playersSnap.exists() ? playersSnap.val() : {};
+        const totalPlayerCount = Object.keys(playersInRoom).length;
 
-        if (playerCount >= roomData.playerCount) {
+        if (totalPlayerCount >= roomData.playerCount) {
             showJoinError('房間已滿');
             console.error('❌ Room is full');
             return;
@@ -617,7 +681,9 @@ async function joinRoom() {
         isHost = false;
         readyStatus = false;
 
-        const playerIndex = playerCount;
+        // Count only human players (not AI) to determine emoji position
+        const humanCount = Object.values(playersInRoom).filter(p => p.type !== 'ai').length;
+        const playerIndex = humanCount; // This is correct for the next human's position
         const playerData = {
             uid: currentUser.uid,
             name: `玩家 ${playerIndex + 1}`,
@@ -671,52 +737,59 @@ function showLobbyUI() {
 }
 
 function listenToRoomUpdates() {
-    const roomRef = ref(database, `rooms/${currentRoomId}/players`);
-    roomPlayersListener = onValue(roomRef, (snapshot) => {
-        updatePlayersList(snapshot.val() || {});
-    });
-
-    // Listen to entire room object for gameState changes (more reliable)
+    // Listen to entire room object to get both players AND playerTypes
     const fullRoomRef = ref(database, `rooms/${currentRoomId}`);
-    gameStateListener = onValue(fullRoomRef, (snapshot) => {
-        const roomData = snapshot.val();
-        if (roomData && roomData.gameState === 'playing') {
+    roomPlayersListener = onValue(fullRoomRef, (snapshot) => {
+        const roomData = snapshot.val() || {};
+        const playersData = roomData.players || {};
+        const playerTypes = roomData.playerTypes || {};
+        
+        // Update players list with player types for ready check
+        updatePlayersList(playersData, playerTypes);
+        
+        // Check gameState changes
+        if (roomData.gameState === 'playing') {
             console.log('🎮 Client: gameState changed to playing! Starting game...');
             startMultiplayerGame();
-        } else if (roomData) {
+        } else if (roomData.gameState) {
             console.log('📦 Client: Current gameState:', roomData.gameState);
         }
     });
 }
 
-function updatePlayersList(playersData) {
+function updatePlayersList(playersData, playerTypes = {}) {
     const playerList = document.getElementById('room-players-list');
     playerList.innerHTML = '';
     document.getElementById('player-count-joined').textContent = Object.keys(playersData).length;
 
+    let playerIndex = 0;
     Object.entries(playersData).forEach(([uid, playerData]) => {
         const isCurrentUser = uid === currentUser.uid;
+        const playerType = playerTypes[playerIndex] || playerData.type || 'human';
         const playerBadge = document.createElement('div');
         playerBadge.className = `flex items-center gap-2 bg-gray-800 p-3 rounded-lg border-2 ${playerData.ready ? 'border-green-500' : 'border-gray-600'}`;
         playerBadge.innerHTML = `
             <span class="text-2xl">${playerData.emoji}</span>
             <div class="flex-1">
                 <p class="font-bold text-white text-sm">${playerData.name}${isCurrentUser ? ' (你)' : ''}</p>
-                <p class="text-[10px] ${playerData.ready ? 'text-green-400' : 'text-gray-400'}">${playerData.ready ? '準備就緒 ✓' : '未準備'}</p>
+                <p class="text-[10px] ${playerData.ready ? 'text-green-400' : 'text-gray-400'}">${playerData.ready ? '準備就緒 ✓' : playerType === 'ai' ? '電腦 AI' : '未準備'}</p>
             </div>
         `;
         playerList.appendChild(playerBadge);
+        playerIndex++;
     });
 
-    // Check if all players are ready and update host button visibility
+    // Check if all HUMAN players are ready (AI players are always considered ready)
     if (isHost) {
-        const allReady = Object.values(playersData).every(p => p.ready);
-        const readyCount = Object.values(playersData).filter(p => p.ready).length;
-        const totalCount = Object.keys(playersData).length;
+        const humanPlayersReady = Object.entries(playersData).every(([ uid, p], idx) => {
+            const playerType = playerTypes[idx] || p.type || 'human';
+            return playerType === 'ai' || p.ready; // AI is always ready, human must be ready
+        });
+        const playerCount = Object.keys(playersData).length;
         const minPlayers = parseInt(document.getElementById('player-count-lobby').value);
         
         const startBtn = document.getElementById('start-game-btn-host');
-        if (totalCount >= minPlayers && allReady) {
+        if (playerCount >= minPlayers && humanPlayersReady) {
             startBtn.classList.remove('hidden');
         } else {
             startBtn.classList.add('hidden');
@@ -746,7 +819,7 @@ async function startGameAsHost() {    if (!isHost || !currentRoomId) {
     }
 
     try {
-        console.log('🎮 HOST: Starting game, setting gameState to playing...');
+        console.log('🎮 HOST: Starting game...');
         
         // Collect player type configs from lobby UI
         const typeInputs = document.querySelectorAll('.p-type-lobby');
@@ -767,15 +840,7 @@ async function startGameAsHost() {    if (!isHost || !currentRoomId) {
         });
         console.log('🔧 HOST: Player types collected:', playerTypes);
         
-        // Update game state in Firebase along with player types
-        await update(ref(database, `rooms/${currentRoomId}`), {
-            gameState: 'playing',
-            playerTypes: playerTypes,
-            turnStartTime: Date.now()
-        });
-        console.log('✅ HOST: Firebase room data updated');
-        
-        // Create Firebase entries for AI players
+        // CREATE AI PLAYERS FIRST before setting gameState
         const playersRef = ref(database, `rooms/${currentRoomId}/players`);
         const playersSnapshot = await get(playersRef);
         const existingPlayers = playersSnapshot.val() || {};
@@ -799,11 +864,18 @@ async function startGameAsHost() {    if (!isHost || !currentRoomId) {
                     currentAction: null,
                     currentTarget: null
                 });
-                console.log(`🧀 HOST: Created AI player ai-${i} (${aiName}`);
+                console.log(`🧀 HOST: Created AI player ai-${i} (${aiName})`);
             }
         }
+        console.log('✅ HOST: All AI players created');
         
-        console.log('✅ HOST: All player setup complete. Game starting...');
+        // NOW set gameState to playing AFTER all players are in Firebase
+        await update(ref(database, `rooms/${currentRoomId}`), {
+            gameState: 'playing',
+            playerTypes: playerTypes,
+            turnStartTime: Date.now()
+        });
+        console.log('✅ HOST: gameState set to playing, all players synchronized');
     } catch (error) {
         console.error('❌ Error starting game:', error);
         alert('Error starting game: ' + error.message);
@@ -847,22 +919,76 @@ function startMultiplayerGame() {
             console.log('👥 Players data fetched:', playersData);
             console.log('⚠️ Player count:', Object.keys(playersData).length);
             
-            // Initialize players array from Firebase data
-            players = Object.entries(playersData).map(([ uid, pData], index) => ({
-                uid: uid,
-                idx: index,
-                name: pData.name,
-                emoji: pData.emoji,
-                type: playerTypes[index] || pData.type || 'human', // Load type from room playerTypes
-                bullets: pData.bullets || 0,
-                isAlive: pData.isAlive !== undefined ? pData.isAlive : true,
-                lastAction: pData.lastAction || null,
-                currentAction: pData.currentAction || null,
-                currentTarget: pData.currentTarget || null
-            }));
+            // Build players array in consistent order based on playerTypes
+            // This ensures all browsers see players in the same order
+            players = [];
+            const playerTypeIndices = Object.keys(playerTypes).map(Number).sort((a, b) => a - b);
+            
+            // Collect human and AI players separately
+            const humanPlayers = [];
+            const aiPlayers = {};
+            
+            Object.entries(playersData).forEach(([uid, pData]) => {
+                if (uid.startsWith('ai-')) {
+                    // Extract AI index from uid (e.g., 'ai-0' -> 0)
+                    const aiIdx = parseInt(uid.substring(3));
+                    aiPlayers[aiIdx] = { uid, data: pData };
+                } else {
+                    humanPlayers.push({ uid, data: pData });
+                }
+            });
+            
+            console.log('👥 Human players found:', humanPlayers.length);
+            console.log('👥 AI players found:', Object.keys(aiPlayers).length);
+            
+            // Build final players array respecting playerTypes order
+            let humanIndex = 0;
+            playerTypeIndices.forEach(typeIdx => {
+                const expectedType = playerTypes[typeIdx];
+                let playerEntry;
+                
+                if (expectedType === 'ai') {
+                    // Use AI player with matching index
+                    playerEntry = aiPlayers[typeIdx];
+                    if (!playerEntry) {
+                        console.warn(`⚠️  Expected AI player at index ${typeIdx} but not found in Firebase`);
+                        return; // Skip this slot
+                    }
+                } else {
+                    // expectedType === 'human': use next available human player
+                    if (humanIndex >= humanPlayers.length) {
+                        console.warn(`⚠️  Expected human player at index ${typeIdx} but ran out of human players (have ${humanIndex}, need ${typeIdx - humanIndex + 1})`);
+                        return; // Skip this slot
+                    }
+                    playerEntry = humanPlayers[humanIndex++];
+                }
+                
+                if (playerEntry) {
+                    players.push({
+                        uid: playerEntry.uid,
+                        idx: players.length,  // Assign index based on final position
+                        name: playerEntry.data.name,
+                        emoji: playerEntry.data.emoji,
+                        type: expectedType,
+                        bullets: playerEntry.data.bullets || 0,
+                        isAlive: playerEntry.data.isAlive !== undefined ? playerEntry.data.isAlive : true,
+                        lastAction: playerEntry.data.lastAction || null,
+                        currentAction: playerEntry.data.currentAction || null,
+                        currentTarget: playerEntry.data.currentTarget || null
+                    });
+                    console.log(`✅ Player ${players.length - 1}: ${playerEntry.data.name} (${expectedType}, uid: ${playerEntry.uid})`);
+                } else {
+                    console.warn(`⚠️  Skipped player slot ${typeIdx} due to missing Firebase entry`);
+                }
+            });
+            
+            // Validate we have enough players
+            if (players.length !== playerTypeIndices.length) {
+                console.warn(`⚠️  Player count mismatch: built ${players.length} but expected ${playerTypeIndices.length}`);
+            }
 
             humanCount = players.filter(p => p.type === 'human').length;
-            console.log('✅ Players initialized:', players);
+            console.log('✅ Players initialized (consistent order):', players);
 
             document.body.classList.add('playing');
             document.getElementById('lobby-screen').classList.add('hidden');
@@ -893,7 +1019,12 @@ let lastTurnState = null; // Track previous turn state to detect resolution
 function listenToGameStateUpdates() {
     // All clients (including host) listen for turn changes
     const playersRef = ref(database, `rooms/${currentRoomId}/players`);
-    onValue(playersRef, (snapshot) => {
+    // NEW: Store unsubscriber for cleanup
+    if (gameStateUpdatesListener) {
+        console.log('🛑 Cleaning up previous gameStateUpdatesListener');
+        gameStateUpdatesListener();
+    }
+    gameStateUpdatesListener = onValue(playersRef, (snapshot) => {
         const playersData = snapshot.val() || {};
         
         // Check if turn resolution just completed (all actions cleared)
@@ -960,7 +1091,12 @@ function listenToPlayerActions() {
     if (!isHost) return;
 
     const playersRef = ref(database, `rooms/${currentRoomId}/players`);
-    onValue(playersRef, (snapshot) => {
+    // NEW: Store unsubscriber for cleanup
+    if (playerActionsListener) {
+        console.log('🛑 Cleaning up previous playerActionsListener');
+        playerActionsListener();
+    }
+    playerActionsListener = onValue(playersRef, (snapshot) => {
         const playersData = snapshot.val() || {};
         
         // Check if all alive players have submitted actions
@@ -1013,21 +1149,12 @@ async function hostCheckAllActionsSubmitted() {
         syncPlayersFromFirebase(playersData);
         await hostResolveActions();
     } else {
-        // Not all players submitted, default to reload for those who didn't
-        let allDefauleted = true;
-        Object.entries(playersData).forEach(([uid, pData]) => {
-            if ((pData.currentAction === null || pData.currentAction === undefined) &&
-                players.find(p => p.uid === uid && p.isAlive)) {
-                // Default to reload
-                allDefauleted = false;
-            }
-        });
-
-        // Default remaining players to reload
+        // Not all players submitted, default remaining to reload
         players.forEach(p => {
-            if (p.isAlive && (!p.currentAction )) {
+            if (p.isAlive && !p.currentAction) {
                 p.currentAction = 'reload';
                 p.currentTarget = null;
+                console.log(`⚙️  Defaulting ${p.name} to reload (no action submitted)`);
             }
         });
 
@@ -1054,11 +1181,27 @@ async function hostResolveActions() {
             tag.textContent = "防禦";
             document.getElementById(`shield-${p.idx}`).classList.remove('hidden');
         } else if (p.currentAction === 'shoot') {
-            p.bullets--;
             const targetIdx = p.currentTarget;
-            incomingShots[targetIdx].push(p.idx);
-            const targetName = players[targetIdx].name;
-            tag.textContent = `🎯 -> ${targetName}`;
+            // NEW: Validate target index to prevent crash
+            if (targetIdx === undefined || targetIdx === null || targetIdx < 0 || targetIdx >= players.length) {
+                console.warn(`⚠️  Invalid target index ${targetIdx} for ${p.name}, defaulting to reload`);
+                p.currentAction = 'reload';
+                p.bullets++;
+                tag.textContent = "+1 子彈";
+            } else {
+                const targetPlayer = players[targetIdx];
+                if (!targetPlayer || !targetPlayer.isAlive) {
+                    console.warn(`⚠️  Target ${targetIdx} is dead or invalid, defaulting to reload`);
+                    p.currentAction = 'reload';
+                    p.bullets++;
+                    tag.textContent = "+1 子彈";
+                } else {
+                    p.bullets--;
+                    incomingShots[targetIdx].push(p.idx);
+                    const targetName = targetPlayer.name;
+                    tag.textContent = `🎯 -> ${targetName}`;
+                }
+            }
         }
         document.getElementById(`bullet-ui-${p.idx}`).textContent = p.bullets;
     });
@@ -1170,8 +1313,8 @@ function checkGameEndForMultiplayer() {
         }
         screen.classList.remove('hidden');
 
-        // Stop listening to Firebase
-        if (gameStateListener) gameStateListener();
+        // Stop listening to Firebase - clean up all listeners
+        cleanupAllListeners();
     } else {
         console.log(`🔄 Game continues, ${alive.length} players alive`);
         startTurnCycle();
@@ -1183,9 +1326,8 @@ function leaveRoom() {
 
     // Remove player from room
     remove(ref(database, `rooms/${currentRoomId}/players/${currentUser.uid}`)).then(() => {
-        // Clean up listeners
-        if (roomPlayersListener) roomPlayersListener();
-        if (gameStateListener) gameStateListener();
+        // Clean up ALL Firebase listeners
+        cleanupAllListeners();
 
         currentRoomId = null;
         isHost = false;
@@ -1206,6 +1348,49 @@ function leaveRoom() {
 // ============================================================
 // LOBBY EVENT LISTENERS
 // ============================================================
+
+async function handlePlayerTypeChange(playerIdx, newType) {
+    // If not in a room yet, just ignore (will be handled on game start)
+    if (!currentRoomId || !isHost) return;
+    
+    // Check if AI player already exists
+    const playersRef = ref(database, `rooms/${currentRoomId}/players`);
+    const snapshot = await get(playersRef);
+    const existingPlayers = snapshot.val() || {};
+    
+    const aiUid = `ai-${playerIdx}`;
+    
+    if (newType === 'ai' && !existingPlayers[aiUid]) {
+        // Create AI player immediately when selected
+        const nickInputs = document.querySelectorAll('.p-nick-lobby');
+        const aiName = nickInputs[playerIdx]?.value || `玩家 ${playerIdx+1}`;
+        
+        try {
+            await set(ref(database, `rooms/${currentRoomId}/players/${aiUid}`), {
+                uid: aiUid,
+                name: aiName,
+                emoji: emojis[playerIdx],
+                type: 'ai',
+                ready: true,  // AI players are always ready
+                bullets: 0,
+                isAlive: true,
+                currentAction: null,
+                currentTarget: null
+            });
+            console.log(`✅ AI player ai-${playerIdx} created with ready: true`);
+        } catch (error) {
+            console.error(`❌ Error creating AI player:`, error);
+        }
+    } else if (newType === 'human' && existingPlayers[aiUid]) {
+        // Remove AI player if switching back to human
+        try {
+            await remove(ref(database, `rooms/${currentRoomId}/players/${aiUid}`));
+            console.log(`✅ Removed AI player ai-${playerIdx}`);
+        } catch (error) {
+            console.error(`❌ Error removing AI player:`, error);
+        }
+    }
+}
 
 function updateLobbyPlayerConfigList() {
     const count = parseInt(document.getElementById('player-count-lobby').value);
@@ -1228,11 +1413,44 @@ function updateLobbyPlayerConfigList() {
         `;
         listDiv.appendChild(div);
     }
+    
+    // Add change listeners to dropdowns
+    const dropdowns = listDiv.querySelectorAll('.p-type-lobby');
+    dropdowns.forEach(dropdown => {
+        dropdown.addEventListener('change', (e) => {
+            const playerIdx = parseInt(e.target.getAttribute('data-idx'));
+            const newType = e.target.value;
+            handlePlayerTypeChange(playerIdx, newType);
+        });
+    });
 }
 
-document.getElementById('player-count-lobby').addEventListener('input', () => {
+document.getElementById('player-count-lobby').addEventListener('input', async () => {
     document.getElementById('player-count-val-lobby').textContent = document.getElementById('player-count-lobby').value;
     updateLobbyPlayerConfigList();
+    
+    // Clean up AI players that are no longer needed when player count decreases
+    if (currentRoomId && isHost) {
+        const newPlayerCount = parseInt(document.getElementById('player-count-lobby').value);
+        const playersRef = ref(database, `rooms/${currentRoomId}/players`);
+        const snapshot = await get(playersRef);
+        const playersData = snapshot.val() || {};
+        
+        // Remove any AI players with indices >= newPlayerCount
+        for (let i = 0; i < 8; i++) {  // Max 8 players
+            if (i >= newPlayerCount) {
+                const aiUid = `ai-${i}`;
+                if (playersData[aiUid]) {
+                    try {
+                        await remove(ref(database, `rooms/${currentRoomId}/players/${aiUid}`));
+                        console.log(`🗑️  Removed excess AI player ai-${i}`);
+                    } catch (error) {
+                        console.error(`❌ Error removing AI player ai-${i}:`, error);
+                    }
+                }
+            }
+        }
+    }
 });
 
 document.getElementById('timer-setting-lobby').addEventListener('input', () => {
