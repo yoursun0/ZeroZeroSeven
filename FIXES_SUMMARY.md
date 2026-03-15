@@ -1,7 +1,7 @@
 # Bug Fixes Summary - March 15, 2026 (Updated)
 
 ## Overview
-**Nine critical issues** have been fixed in the multiplayer game:
+**Eleven critical issues** have been fixed in the multiplayer game:
 1. ✅ Timer desynchronization between browsers
 2. ✅ Victory screen not showing on losing player's browser
 3. ✅ AI player configuration and integration in multiplayer
@@ -11,6 +11,8 @@
 7. ✅ [NEW] Memory leaks from unmanaged Firebase listeners
 8. ✅ [NEW] Shoot target validation crash when target invalid
 9. ✅ [NEW] Missing listener cleanup on game end and room leave
+10. ✅ [NEW] Firebase database not updated with player types during ready status
+11. ✅ [NEW] Confusing local-mode panel in lobby (removed)
 
 ---
 
@@ -851,3 +853,171 @@ If critical issues occur, changes are localized to `game.js`:
 **Global variables added:**
 - `gameStateUpdatesListener` - NEW
 - `playerActionsListener` - NEW
+
+---
+
+## Issue #13: Firebase Database Not Updated with Player Types During Ready Status (CRITICAL)
+
+### Problem
+**Scenario**: Host creates room with 5 players (2 human + 3 AI) and clicks "Ready". Client joining the room only sees 2 players in lobby, not realizing there will be 5 total players including 3 AI players. The Firebase database never records the `playerTypes` mapping until "Start Game" is clicked.
+
+**Impact**:
+- ❌ Client confused about actual player count
+- ❌ Mismatch between expected and actual game setup
+- ❌ Client can't see AI player allocation before game starts
+- ❌ Requires looking at game arena to discover AI players exist
+
+### Root Cause
+The `markPlayerReady()` function only updated the player's `ready` status in Firebase. The `playerTypes` mapping (which specifies index-to-type assignments like `{0: 'human', 1: 'human', 2: 'ai', 3: 'ai', 4: 'ai'}`) was only written to Firebase when `startGameAsHost()` called, not when host clicked "Ready".
+
+### Solution Implemented
+
+**Updated `markPlayerReady()` function:**
+```javascript
+async function markPlayerReady() {
+    if (!currentRoomId || !currentUser) return;
+
+    readyStatus = !readyStatus;
+    
+    try {
+        // Always update ready status
+        await update(ref(database, `rooms/${currentRoomId}/players/${currentUser.uid}`), {
+            ready: readyStatus
+        });
+        
+        // NEW: If host is ready, also write playerTypes configuration
+        // so client can see the full player count (including AI) before game starts
+        if (isHost && readyStatus) {
+            console.log('🎮 HOST: Ready status set, publishing playerTypes configuration...');
+            
+            const typeInputs = document.querySelectorAll('.p-type-lobby');
+            const playerTypes = {};
+            
+            typeInputs.forEach((input, idx) => {
+                playerTypes[idx] = input.value; // 'human' or 'ai'
+            });
+            
+            // Write playerTypes to room data immediately
+            await update(ref(database, `rooms/${currentRoomId}`), {
+                playerTypes: playerTypes
+            });
+            
+            console.log('✅ HOST: playerTypes configuration written to Firebase');
+        }
+    } catch (error) {
+        console.error('❌ Error updating ready status:', error);
+    }
+    
+    // Update button UI...
+}
+```
+
+### How Client Now Works
+
+**Client's room listener automatically sees playerTypes:**
+```javascript
+// Client listener detects room update
+onValue(roomRef, (snapshot) => {
+    const roomData = snapshot.val();
+    const playerTypes = roomData.playerTypes;  // NOW VISIBLE!
+    // Calculate total players: Object.keys(playerTypes).length
+    const totalPlayers = playerTypes ? Object.keys(playerTypes).length : humanPlayerCount;
+});
+```
+
+### Firebase Database Change
+
+**Before (BUG)**:
+```
+rooms/A1B2/
+  ├── playerTypes: null  ← NOT WRITTEN YET
+  └── players/
+      ├── uid123/ {name: "玩家 1", type: "human"}
+      └── uid456/ {name: "玩家 2", type: "human"}
+      └── // AI players don't exist until game starts!
+```
+
+**After (FIXED)**:
+```
+rooms/A1B2/
+  ├── playerTypes: {0: 'human', 1: 'human', 2: 'ai', 3: 'ai', 4: 'ai'}  ← WRITTEN NOW!
+  └── players/
+      ├── uid123/ {name: "玩家 1", type: "human", ready: true}
+      └── uid456/ {name: "玩家 2", type: "human", ready: false}
+```
+
+### How to Test
+
+1. **Browser 1 (Host)**: Create room with 5 players, set to 2H + 3 AI
+2. **Browser 2 (Client)**: Join room → sees "玩家 (2)" initially
+3. **Browser 1**: Click "準備就緒" button
+   - Console shows: `✅ HOST: playerTypes configuration written to Firebase`
+4. **Browser 2**: Room listener fires automatically
+   - Player count badge updates to "玩家 (5)"
+   - No "遊戲開始" needed yet  
+   - Client already knows: 2 humans, 3 AI
+
+---
+
+## Issue #14: Confusing Local-Mode Panel in Lobby (UI/UX Issue)
+
+### Problem
+The lobby screen had a confusing layout when scrolling:
+1. **Top section**: Firebase multiplayer (Create/Join room)
+2. **Bottom section**: Local mode (Play without Firebase)
+
+**Issues**:
+- ❌ Users scroll and find unexpected local-mode setup
+- ❌ Confusing which mode they're using
+- ❌ Redundant - multiplayer with AI achieves same goal
+- ❌ Local mode wasn't truly "multiplayer" for one player solo with AI
+
+### Solution Implemented
+
+**Removed from `index.html`:****  - Deleted entire `<div id="setup-screen">` block (previously lines 104-142)
+  - Removed local mode player configuration UI
+  - Removed "開始遊戲" button for local mode
+
+**Removed from `game.js`:****  - Deleted local mode variables: `playerCountInput`, `timerSettingInput`, `playerConfigList`
+  - Deleted `updateConfigList()` function
+  - Deleted `start-game-btn` click handler (was for local mode)
+  - Simplified `resetToMenu()`: always returns to lobby (no if/else for setup-screen)
+  - Removed all setup-screen show/hide logic
+
+### After Fix
+
+**Lobby Now Shows**:
+1. **Create Room** - Host multiplayer with friends/AI
+2. **Join Room** - Players join existing room
+
+**Solo Play Option**:
+- Host creates room with "2 players"
+- Sets: Player 1 = Human (you), Player 2 = AI
+- Plays with AI (same as old local mode, but now with networking)
+
+### Files Changed
+- **index.html**: Removed setup-screen div
+- **game.js**: Removed 30+ lines of local mode code
+
+### How to Test
+
+1. **Page Load**: Only lobby visible, no scrollable setup panel
+2. **Playing Solo**: Create room (2 players: human + AI) → same experience as before
+3. **Return to Menu**: Always goes back to lobby, never tries to show setup-screen
+
+---
+
+## Final Validation Checklist (After All 14 Fixes)
+
+- [ ] **Issues #1-3**: Original AI/timer/victory fixes working
+- [ ] **Issue #4**: Player count consistent across browsers (2H+1AI = 3 on both)
+- [ ] **Issue #5**: Emoji assignments correct for joining players
+- [ ] **Issue #6**: Player count decrease removes orphaned AI from Firebase
+- [ ] **Issue #7**: Action buttons highlight in multiplayer games
+- [ ] **Issue #8**: Player array building shows validation warnings
+- [ ] **Issue #9**: Listeners cleanup on exit (console shows 🧹 messages)
+- [ ] **Issue #10**: Invalid shoot targets don't crash game
+- [ ] **Issue #11**: Game end cleans up all listeners immediately
+- [ ] **Issue #12**: Room transitions have no listener interference
+- [ ] **Issue #13**: PlayerTypes written to Firebase when host clicks "Ready"
+- [ ] **Issue #14**: Only lobby visible, no confusing local mode panel

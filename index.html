@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>007 入子彈 (Reload Strategy Game)</title>
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔫</text></svg>">
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="style.css">
 </head>
@@ -29,6 +30,13 @@
             <div class="border-b border-gray-700 pb-6">
                 <h2 class="text-xl font-bold text-yellow-500 mb-4">加入房間</h2>
                 <div class="flex gap-2 flex-col">
+                    <input 
+                        type="text" 
+                        id="client-name-input" 
+                        placeholder="輸入你的名稱 (預設: 玩家 2)" 
+                        maxlength="8"
+                        class="bg-gray-800 border border-gray-700 text-white p-3 rounded-xl text-center font-bold text-sm"
+                    >
                     <input 
                         type="text" 
                         id="join-room-input" 
@@ -100,46 +108,7 @@
         </div>
     </div>
 
-    <!-- Setup Screen (Natural Flow) -->
-    <div id="setup-screen" class="bg-black">
-        <h1 class="text-4xl md:text-5xl font-black mb-6 text-yellow-500 italic tracking-tighter text-center">007 入子彈</h1>
-        
-        <div class="bg-gray-900 border border-gray-800 p-5 md:p-8 rounded-2xl w-full max-w-2xl shadow-2xl flex flex-col">
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
-                <div class="bg-gray-800/30 p-3 rounded-lg">
-                    <label class="flex justify-between mb-2 font-bold text-xs uppercase text-gray-400">
-                        玩家人數: <span id="player-count-val" class="text-yellow-500">4</span>
-                    </label>
-                    <input type="range" id="player-count" min="2" max="8" value="4" class="w-full accent-yellow-500">
-                </div>
-                <div class="bg-gray-800/30 p-3 rounded-lg">
-                    <label class="flex justify-between mb-2 font-bold text-xs uppercase text-gray-400">
-                        倒數秒數: <span id="timer-val" class="text-yellow-500">9</span>
-                    </label>
-                    <input type="range" id="timer-setting" min="3" max="20" value="9" class="w-full accent-yellow-500">
-                </div>
-            </div>
-
-            <div class="flex items-center justify-between mb-6 bg-gray-800 p-3 rounded-xl">
-                <span class="font-bold text-sm">顯示子彈數量</span>
-                <input type="checkbox" id="show-bullets" checked class="w-5 h-5 accent-yellow-500">
-            </div>
-
-            <div class="mb-3 text-[10px] text-gray-500 font-black px-2 flex justify-between uppercase tracking-widest">
-                <span>角色 & 名稱</span>
-                <span>控制類型</span>
-            </div>
-            
-            <!-- No overflow-y-auto here, it will grow with contents -->
-            <div id="player-config-list" class="mb-8">
-                <!-- Injected via JS -->
-            </div>
-
-            <button id="start-game-btn" class="bg-yellow-500 hover:bg-yellow-400 text-black py-4 rounded-xl font-black text-xl w-full transition-all transform active:scale-95 shadow-lg">
-                開始遊戲
-            </button>
-        </div>
-    </div>
+    <!-- Local Mode Removed - Use multiplayer with AI instead -->
 
     <!-- Main Game UI (Fixed) -->
     <div id="game-ui" class="hidden game-container">

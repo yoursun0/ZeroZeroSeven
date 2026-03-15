@@ -25,68 +25,10 @@ let gameStateListener = null;
 let playerActionsListener = null;  // NEW: Store host's action listener for cleanup
 let gameStateUpdatesListener = null;  // NEW: Store all clients' game state listener for cleanup
 
-const playerCountInput = document.getElementById('player-count');
-const timerSettingInput = document.getElementById('timer-setting');
-const playerConfigList = document.getElementById('player-config-list');
 
-function updateConfigList() {
-    const count = parseInt(playerCountInput.value);
-    document.getElementById('player-count-val').textContent = count;
-    playerConfigList.innerHTML = '';
-    for (let i = 0; i < count; i++) {
-        const div = document.createElement('div');
-        div.className = 'flex justify-between items-center bg-gray-800/50 p-3 rounded-xl border border-gray-700';
-        div.innerHTML = `
-            <div class="flex items-center gap-3">
-                <span class="text-2xl">${emojis[i]}</span>
-                <input type="text" class="nickname-input p-nick" data-idx="${i}" value="玩家 ${i+1}" maxlength="8">
-            </div>
-            <select class="bg-gray-700 rounded-lg text-xs font-black px-3 py-2 p-type uppercase" data-idx="${i}">
-                <option value="human" ${i===0?'selected':''}>真人</option>
-                <option value="ai" ${i!==0?'selected':''}>電腦 AI</option>
-            </select>
-        `;
-        playerConfigList.appendChild(div);
-    }
-}
+// LOCAL MODE REMOVED - Use multiplayer room with AI instead
+// Players can create a room with themselves and AI players to play locally
 
-playerCountInput.addEventListener('input', updateConfigList);
-timerSettingInput.addEventListener('input', () => {
-    document.getElementById('timer-val').textContent = timerSettingInput.value;
-});
-updateConfigList();
-
-document.getElementById('start-game-btn').onclick = () => {
-    const count = parseInt(playerCountInput.value);
-    startBeat = parseInt(timerSettingInput.value);
-    showBulletCount = document.getElementById('show-bullets').checked;
-    
-    const nicks = document.querySelectorAll('.p-nick');
-    const types = document.querySelectorAll('.p-type');
-    
-    humanCount = 0;
-    players = Array.from({length: count}, (_, i) => {
-        if (types[i].value === 'human') humanCount++;
-        return {
-            idx: i,
-            name: nicks[i].value || `玩家 ${i+1}`,
-            emoji: emojis[i],
-            type: types[i].value,
-            bullets: 0,
-            isAlive: true,
-            lastAction: null,
-            currentAction: null,
-            currentTarget: null
-        };
-    });
-
-    document.body.classList.add('playing');
-    document.getElementById('setup-screen').classList.add('hidden');
-    document.getElementById('game-ui').classList.remove('hidden');
-    window.scrollTo(0, 0); // Reset scroll for game start
-    renderArena();
-    startTurnCycle();
-};
 
 function resetToMenu() {
     gameActive = false;
@@ -96,22 +38,13 @@ function resetToMenu() {
     // Clean up ALL Firebase listeners
     cleanupAllListeners();
     
-    // If in a room, return to lobby. Otherwise return to setup
-    if (currentRoomId) {
-        document.getElementById('game-ui').classList.add('hidden');
-        document.getElementById('victory-screen').classList.add('hidden');
-        document.getElementById('lobby-screen').classList.remove('hidden');
-        const arena = document.getElementById('game-arena');
-        arena.querySelectorAll('.player-node, .control-pod').forEach(n => n.remove());
-    } else {
-        document.getElementById('setup-screen').classList.remove('hidden');
-        document.getElementById('game-ui').classList.add('hidden');
-        document.getElementById('victory-screen').classList.add('hidden');
-        document.getElementById('lobby-screen').classList.add('hidden');
-        document.getElementById('exit-to-menu').classList.add('hidden');
-        const arena = document.getElementById('game-arena');
-        arena.querySelectorAll('.player-node, .control-pod').forEach(n => n.remove());
-    }
+    // Return to lobby
+    document.getElementById('game-ui').classList.add('hidden');
+    document.getElementById('victory-screen').classList.add('hidden');
+    document.getElementById('lobby-screen').classList.remove('hidden');
+    document.getElementById('exit-to-menu').classList.add('hidden');
+    const arena = document.getElementById('game-arena');
+    arena.querySelectorAll('.player-node, .control-pod').forEach(n => n.remove());
 }
 
 // NEW: Centralized listener cleanup function
@@ -150,14 +83,26 @@ function getPlayer(pIdx) {
 
 function renderArena() {
     const arena = document.getElementById('game-arena');
+    console.log('📍 renderArena() called');
+    console.log('   Arena element:', arena);
+    console.log('   Arena width:', arena.offsetWidth, 'px');
+    console.log('   Arena height:', arena.offsetHeight, 'px');
+    console.log('   Total players:', players.length);
+    
     arena.querySelectorAll('.player-node, .control-pod').forEach(n => n.remove());
     
     const radius = arena.offsetWidth / 2;
+    console.log('   Arena radius:', radius, 'px');
+    
     players.forEach((p, i) => {
+        console.log(`\n   Player ${i}:`, {name: p.name, type: p.type, uid: p.uid, isAlive: p.isAlive});
+        
         const angle = (i * (360 / players.length)) - 90;
         const rad = angle * Math.PI / 180;
         const x = radius + radius * Math.cos(rad);
         const y = radius + radius * Math.sin(rad);
+        
+        console.log(`     Position: angle=${angle}°, x=${x.toFixed(1)}px, y=${y.toFixed(1)}px`);
 
         const node = document.createElement('div');
         node.id = `node-${i}`;
@@ -165,9 +110,11 @@ function renderArena() {
         node.style.left = `${x}px`;
         node.style.top = `${y}px`;
 
-        const podOffset = 80; 
+        const podOffset = 45;  // Reduced from 80 to keep pods within arena bounds
         const px = x + podOffset * Math.cos(rad);
         const py = y + podOffset * Math.sin(rad);
+        
+        console.log(`     Pod offset: ${podOffset}px, Pod pos: px=${px.toFixed(1)}, py=${py.toFixed(1)}`);
 
         node.innerHTML = `
             <div class="player-avatar" id="avatar-${i}">
@@ -186,6 +133,7 @@ function renderArena() {
         // In single-player, show control pods for all human players
         // In multiplayer, show control pods only for the current player
         const shouldShowPod = p.type === 'human' && (!currentRoomId || p.uid === currentUser.uid);
+        console.log(`     Should show pod: shouldShowPod=${shouldShowPod}, currentRoomId=${currentRoomId}, currentUser.uid=${currentUser.uid}`);
         
         if (shouldShowPod) {
             const pod = document.createElement('div');
@@ -195,37 +143,48 @@ function renderArena() {
             pod.style.top = `${py}px`;
             pod.style.transform = 'translate(-50%, -50%)';
             
+            console.log(`     ✅ POD ${i} CREATED: id=${pod.id}, style.left=${pod.style.left}, style.top=${pod.style.top}`);
+            
             pod.innerHTML = `
                 <button onclick="handleInput(${i}, 'reload')" id="btn-${i}-reload" class="pod-btn bg-blue-900/80 text-white">🔋</button>
                 <button onclick="handleInput(${i}, 'shield')" id="btn-${i}-shield" class="pod-btn bg-gray-800/80 text-white">🛡️</button>
                 <button onclick="handleInput(${i}, 'shoot')" id="btn-${i}-shoot" class="pod-btn bg-red-900/80 text-white">🔫</button>
             `;
             arena.appendChild(pod);
+            console.log(`     ✅ POD ${i} APPENDED to arena`);
+        } else {
+            console.log(`     ❌ POD ${i} SKIPPED (not human or not currentUser)`);
         }
         arena.appendChild(node);
+    });
+    
+    // Verification: Check if pods are in DOM
+    const podsInDom = arena.querySelectorAll('.control-pod');
+    console.log(`\n📍 Verification: ${podsInDom.length} control pods found in DOM`);
+    podsInDom.forEach((pod, idx) => {
+        console.log(`     Pod ${idx}: id=${pod.id}, left=${pod.style.left}, top=${pod.style.top}, visible=${pod.offsetHeight > 0}`);
     });
 }
 
 function startTurnCycle() {
-    console.log('🔄 Starting new turn cycle');
+    console.log('🔄 Starting new turn cycle - waiting for player actions (no countdown)');
     const aliveHumans = players.filter(p => p.isAlive && p.type === 'human');
     if (aliveHumans.length === 0) {
         document.getElementById('exit-to-menu').classList.remove('hidden');
     }
     gameActive = true;
-    currentBeat = startBeat;
     
-    // Write turn start time to Firebase for synchronized countdown
-    if (currentRoomId && isHost) {
-        const timestamp = Date.now();
-        turnStartTime = timestamp;
-        update(ref(database, `rooms/${currentRoomId}`), {
-            turnStartTime: timestamp,
-            turnStartBeat: startBeat
-        }).catch(err => console.error('Error writing turn start time:', err));
+    // Hide the countdown clock - no timer during action selection
+    const display = document.getElementById('beat-counter');
+    const status = document.getElementById('game-status');
+    display.textContent = '?';  // Show question mark instead of countdown
+    status.textContent = '請選擇行動...';
+    
+    // For host: listen for when all humans have submitted actions
+    if (isHost && currentRoomId) {
+        console.log('🎮 HOST: Waiting for all humans to submit actions');
+        // We'll use Firebase listener from listenToPlayerActions
     }
-    
-    runCountdown();
 }
 
 function runCountdown() {
@@ -280,7 +239,7 @@ function runCountdown() {
 }
 
 function handleInput(pIdx, action) {
-    if (currentBeat < 0 || !gameActive) return;
+    if (!gameActive) return; // Check game active, not beat anymore
     const p = players[pIdx];
     if (!p.isAlive) return;
     
@@ -684,9 +643,14 @@ async function joinRoom() {
         // Count only human players (not AI) to determine emoji position
         const humanCount = Object.values(playersInRoom).filter(p => p.type !== 'ai').length;
         const playerIndex = humanCount; // This is correct for the next human's position
+        
+        // Get client's chosen name or use default
+        const clientNameInput = document.getElementById('client-name-input');
+        const clientName = clientNameInput && clientNameInput.value.trim() ? clientNameInput.value.trim() : `玩家 ${playerIndex + 1}`;
+        
         const playerData = {
             uid: currentUser.uid,
-            name: `玩家 ${playerIndex + 1}`,
+            name: clientName,
             emoji: emojis[playerIndex % emojis.length],
             type: 'human',
             ready: false,
@@ -718,7 +682,6 @@ function showJoinError(message) {
 
 function showLobbyUI() {
     document.getElementById('lobby-screen').classList.remove('hidden');
-    document.getElementById('setup-screen').classList.add('hidden');
     document.getElementById('game-ui').classList.add('hidden');
 
     if (isHost) {
@@ -746,6 +709,11 @@ function listenToRoomUpdates() {
         
         // Update players list with player types for ready check
         updatePlayersList(playersData, playerTypes);
+        
+        // If host, update the player config list to show real joined clients
+        if (isHost) {
+            updateLobbyPlayerConfigList();
+        }
         
         // Check gameState changes
         if (roomData.gameState === 'playing') {
@@ -781,10 +749,12 @@ function updatePlayersList(playersData, playerTypes = {}) {
 
     // Check if all HUMAN players are ready (AI players are always considered ready)
     if (isHost) {
-        const humanPlayersReady = Object.entries(playersData).every(([ uid, p], idx) => {
-            const playerType = playerTypes[idx] || p.type || 'human';
-            return playerType === 'ai' || p.ready; // AI is always ready, human must be ready
+        // Check if all humans are ready (AI players are always ready)
+        const humanPlayersReady = Object.values(playersData).every((p) => {
+            // AI players are always ready, humans must have ready flag
+            return p.type === 'ai' || p.ready === true;
         });
+        
         const playerCount = Object.keys(playersData).length;
         const minPlayers = parseInt(document.getElementById('player-count-lobby').value);
         
@@ -801,9 +771,71 @@ async function markPlayerReady() {
     if (!currentRoomId || !currentUser) return;
 
     readyStatus = !readyStatus;
-    await update(ref(database, `rooms/${currentRoomId}/players/${currentUser.uid}`), {
-        ready: readyStatus
-    });
+    
+    try {
+        // Always update ready status
+        await update(ref(database, `rooms/${currentRoomId}/players/${currentUser.uid}`), {
+            ready: readyStatus
+        });
+        
+        // If host is ready, publish playerTypes AND create AI players
+        if (isHost && readyStatus) {
+            console.log('🎮 HOST: Ready status set, creating AI players and publishing playerTypes...');
+            
+            const typeInputs = document.querySelectorAll('.p-type-lobby');
+            const playerCount = parseInt(document.getElementById('player-count-lobby').value);
+            const playerTypes = {};
+            
+            typeInputs.forEach((input, idx) => {
+                playerTypes[idx] = input.value; // 'human' or 'ai'
+            });
+            
+            console.log('📤 HOST: Publishing playerTypes to Firebase:', playerTypes);
+            
+            // CREATE AI PLAYERS if they don't exist
+            const playersRef = ref(database, `rooms/${currentRoomId}/players`);
+            const playersSnapshot = await get(playersRef);
+            const existingPlayers = playersSnapshot.val() || {};
+            
+            for (let i = 0; i < playerCount; i++) {
+                if (playerTypes[i] === 'ai' && !existingPlayers[`ai-${i}`]) {
+                    // Get nickname for AI player
+                    const nickInputs = document.querySelectorAll('.p-nick-lobby');
+                    const aiName = nickInputs[i]?.value || `玩家 ${i+1}`;
+                    
+                    // Create AI player entry
+                    await set(ref(database, `rooms/${currentRoomId}/players/ai-${i}`), {
+                        uid: `ai-${i}`,
+                        name: aiName,
+                        emoji: emojis[i],
+                        type: 'ai',
+                        ready: true,
+                        bullets: 0,
+                        isAlive: true,
+                        currentAction: null,
+                        currentTarget: null
+                    });
+                    console.log(`🧀 HOST: Created AI player ai-${i} (${aiName})`);
+                }
+            }
+            
+            // Write playerTypes to room data so all clients can see expected player count
+            await update(ref(database, `rooms/${currentRoomId}`), {
+                playerTypes: playerTypes,
+                playerCount: playerCount  // Update playerCount to match total expected players
+            });
+            
+            console.log('✅ HOST: All AI players created and playerTypes configuration written to Firebase');
+            
+            // Freeze lobby inputs for host
+            setLobbyInputsDisabled(true);
+        } else if (isHost && !readyStatus) {
+            // Host unready - unfreeze inputs
+            setLobbyInputsDisabled(false);
+        }
+    } catch (error) {
+        console.error('❌ Error updating ready status:', error);
+    }
 
     const readyBtn = isHost ? document.getElementById('ready-btn-host') : document.getElementById('ready-btn-client');
     readyBtn.textContent = readyStatus ? '已準備' : '準備就緒';
@@ -813,7 +845,8 @@ async function markPlayerReady() {
     readyBtn.classList.toggle('text-black', !readyStatus);
 }
 
-async function startGameAsHost() {    if (!isHost || !currentRoomId) {
+async function startGameAsHost() {
+    if (!isHost || !currentRoomId) {
         console.error('❌ Cannot start game: isHost=' + isHost + ', currentRoomId=' + currentRoomId);
         return;
     }
@@ -821,61 +854,12 @@ async function startGameAsHost() {    if (!isHost || !currentRoomId) {
     try {
         console.log('🎮 HOST: Starting game...');
         
-        // Collect player type configs from lobby UI
-        const typeInputs = document.querySelectorAll('.p-type-lobby');
-        console.log('📋 HOST: Found ' + typeInputs.length + ' type inputs');
-        
-        const playerCount = parseInt(document.getElementById('player-count-lobby').value);
-        console.log('📋 HOST: Player count from slider: ' + playerCount);
-        
-        if (typeInputs.length === 0) {
-            console.error('❌ No player type inputs found! Player config list not populated');
-            alert('Please set player types. Refresh the page and try again.');
-            return;
-        }
-        
-        const playerTypes = {};
-        typeInputs.forEach((input, idx) => {
-            playerTypes[idx] = input.value; // 'human' or 'ai'
-        });
-        console.log('🔧 HOST: Player types collected:', playerTypes);
-        
-        // CREATE AI PLAYERS FIRST before setting gameState
-        const playersRef = ref(database, `rooms/${currentRoomId}/players`);
-        const playersSnapshot = await get(playersRef);
-        const existingPlayers = playersSnapshot.val() || {};
-        console.log('👥 HOST: Existing players:', Object.keys(existingPlayers));
-        
-        for (let i = 0; i < playerCount; i++) {
-            if (playerTypes[i] === 'ai' && !existingPlayers[`ai-${i}`]) {
-                // Get nickname for AI player
-                const nickInputs = document.querySelectorAll('.p-nick-lobby');
-                const aiName = nickInputs[i]?.value || `玩家 ${i+1}`;
-                
-                // Create AI player entry
-                await set(ref(database, `rooms/${currentRoomId}/players/ai-${i}`), {
-                    uid: `ai-${i}`,
-                    name: aiName,
-                    emoji: emojis[i],
-                    type: 'ai',
-                    ready: true,
-                    bullets: 0,
-                    isAlive: true,
-                    currentAction: null,
-                    currentTarget: null
-                });
-                console.log(`🧀 HOST: Created AI player ai-${i} (${aiName})`);
-            }
-        }
-        console.log('✅ HOST: All AI players created');
-        
-        // NOW set gameState to playing AFTER all players are in Firebase
+        // Just set gameState to playing - AI players should already be created by markPlayerReady
         await update(ref(database, `rooms/${currentRoomId}`), {
             gameState: 'playing',
-            playerTypes: playerTypes,
             turnStartTime: Date.now()
         });
-        console.log('✅ HOST: gameState set to playing, all players synchronized');
+        console.log('✅ HOST: gameState set to playing, initiating game start...');
     } catch (error) {
         console.error('❌ Error starting game:', error);
         alert('Error starting game: ' + error.message);
@@ -884,6 +868,10 @@ async function startGameAsHost() {    if (!isHost || !currentRoomId) {
 
 function startMultiplayerGame() {
     console.log('🎮 Starting multiplayer game...');
+    console.log('   currentRoomId:', currentRoomId);
+    console.log('   isHost:', isHost);
+    console.log('   currentUser.uid:', currentUser.uid);
+    
     // Clean up room listeners
     if (roomPlayersListener) {
         console.log('🛑 Cleaning up room players listener');
@@ -918,6 +906,7 @@ function startMultiplayerGame() {
             
             console.log('👥 Players data fetched:', playersData);
             console.log('⚠️ Player count:', Object.keys(playersData).length);
+            console.log('⚠️ Player types config:', playerTypes);
             
             // Build players array in consistent order based on playerTypes
             // This ensures all browsers see players in the same order
@@ -989,6 +978,11 @@ function startMultiplayerGame() {
 
             humanCount = players.filter(p => p.type === 'human').length;
             console.log('✅ Players initialized (consistent order):', players);
+            console.log('   Player details:');
+            players.forEach((p, idx) => {
+                const isCurrentUser = p.uid === currentUser.uid;
+                console.log(`     [${idx}] ${p.emoji} ${p.name} | type=${p.type} | uid=${p.uid} | isAlive=${p.isAlive} | IS_YOU=${isCurrentUser}`);
+            });
 
             document.body.classList.add('playing');
             document.getElementById('lobby-screen').classList.add('hidden');
@@ -1017,15 +1011,27 @@ function startMultiplayerGame() {
 let lastTurnState = null; // Track previous turn state to detect resolution
 
 function listenToGameStateUpdates() {
-    // All clients (including host) listen for turn changes
+    // All clients (including host) listen for turn changes and action submissions
     const playersRef = ref(database, `rooms/${currentRoomId}/players`);
     // NEW: Store unsubscriber for cleanup
     if (gameStateUpdatesListener) {
         console.log('🛑 Cleaning up previous gameStateUpdatesListener');
         gameStateUpdatesListener();
     }
+    
+    let countdownShown = false; // Track if we've already shown countdown for this turn
+    
     gameStateUpdatesListener = onValue(playersRef, (snapshot) => {
         const playersData = snapshot.val() || {};
+        
+        // CLIENTS: Detect when all humans have submitted actions (show countdown)
+        if (!isHost && !countdownShown && gameActive) {
+            if (checkAllHumansSubmitted(playersData)) {
+                console.log('👁️ CLIENT: All humans submitted! Showing action countdown...');
+                countdownShown = true;
+                showActionCountdown();
+            }
+        }
         
         // Check if turn resolution just completed (all actions cleared)
         const allActionsNull = Object.values(playersData).every(p => {
@@ -1040,6 +1046,7 @@ function listenToGameStateUpdates() {
         // Detect transition from waiting to idle = turn resolution complete
         if (wasWaiting && isNowIdle) {
             console.log('🔄 PLAYER: Detected turn resolution complete');
+            countdownShown = false; // Reset for next turn
             
             // Check if game has ended
             checkGameEndForMultiplayer();
@@ -1096,16 +1103,77 @@ function listenToPlayerActions() {
         console.log('🛑 Cleaning up previous playerActionsListener');
         playerActionsListener();
     }
+    
+    let resolutionInProgress = false; // Prevent multiple resolutions
+    
     playerActionsListener = onValue(playersRef, (snapshot) => {
+        if (resolutionInProgress || !gameActive) return;
+        
         const playersData = snapshot.val() || {};
         
-        // Check if all alive players have submitted actions
-        const allSubmitted = checkAllActionsSubmitted(playersData);
-        if (allSubmitted) {
-            // Update local player data with Firebase data
+        // Check if all alive humans have submitted actions
+        const allHumansSubmitted = checkAllHumansSubmitted(playersData);
+        
+        if (allHumansSubmitted) {
+            console.log('✅ HOST: All humans have submitted actions! Proceeding to AI action determination.');
+            resolutionInProgress = true;
+            
+            // Sync player data from Firebase
             syncPlayersFromFirebase(playersData);
+            
+            // Let AI players decide their actions (they haven't yet in no-countdown mode)
+            players.forEach(p => { 
+                if (p.isAlive && p.type === 'ai' && !p.currentAction) {
+                    runAI(p);
+                    // Submit AI action to Firebase
+                    submitActionToFirebase(p.idx, p.currentAction, p.currentTarget, p.uid);
+                }
+            });
+            
+            // Wait a brief moment for AI actions to sync, then show 3-second countdown
+            setTimeout(() => {
+                showActionCountdown();
+            }, 200);
         }
     });
+}
+
+function checkAllHumansSubmitted(playersData) {
+    // Only check if all ALIVE HUMAN players have submitted
+    const aliveHumans = players.filter(p => p.isAlive && p.type === 'human');
+    
+    if (aliveHumans.length === 0) return true; // No humans to wait for
+    
+    return aliveHumans.every(p => {
+        const fbData = playersData[p.uid];
+        return fbData && fbData.currentAction !== null && fbData.currentAction !== undefined;
+    });
+}
+
+async function showActionCountdown() {
+    // Show 3-second countdown before revealing actions and resolving
+    gameActive = false; // Prevent new actions
+    const display = document.getElementById('beat-counter');
+    const status = document.getElementById('game-status');
+    
+    status.textContent = '準備公開行動...';
+    
+    for (let i = 3; i >= 0; i--) {
+        display.textContent = i;
+        display.animate([
+            { transform: 'scale(1.3)', opacity: 1 },
+            { transform: 'scale(1)', opacity: 1 }
+        ], { duration: 250 });
+        
+        if (i > 0) {
+            await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+    }
+    
+    // Now resolve actions
+    if (isHost) {
+        await hostResolveActions();
+    }
 }
 
 function checkAllActionsSubmitted(playersData) {
@@ -1244,7 +1312,7 @@ async function hostResolveActions() {
         playerUpdates[p.uid] = {
             bullets: p.bullets,
             isAlive: p.isAlive,
-            lastAction: p.currentAction,
+            lastAction: p.currentAction || null,  // Use null instead of undefined
             currentAction: null,
             currentTarget: null
         };
@@ -1252,14 +1320,19 @@ async function hostResolveActions() {
 
     // Write updated state back to Firebase
     try {
-        await update(ref(database, `rooms/${currentRoomId}/players`), 
-            Object.keys(playerUpdates).reduce((acc, uid) => {
-                Object.keys(playerUpdates[uid]).forEach(key => {
-                    acc[`${uid}/${key}`] = playerUpdates[uid][key];
-                });
-                return acc;
-            }, {})
-        );
+        // Filter out undefined values before writing
+        const firebaseUpdate = {};
+        Object.keys(playerUpdates).forEach(uid => {
+            Object.keys(playerUpdates[uid]).forEach(key => {
+                const value = playerUpdates[uid][key];
+                // Only include non-undefined values
+                if (value !== undefined) {
+                    firebaseUpdate[`${uid}/${key}`] = value;
+                }
+            });
+        });
+        
+        await update(ref(database, `rooms/${currentRoomId}/players`), firebaseUpdate);
 
         // Increment turn counter or add turn log
         const currentTurn = await get(ref(database, `rooms/${currentRoomId}/currentTurn`));
@@ -1297,26 +1370,56 @@ function checkGameEndForMultiplayer() {
     console.log(`👥 Players alive: ${alive.length} of ${players.length}`);
     
     if (alive.length <= 1) {
-        console.log('🏆 Game over! Showing victory screen');
-        const screen = document.getElementById('victory-screen');
-        const winEmoji = document.getElementById('winner-emoji');
-        const winName = document.getElementById('winner-name');
-        const winTitle = document.getElementById('winner-title');
-        if (alive.length === 1) {
-            winEmoji.textContent = alive[0].emoji;
-            winName.textContent = alive[0].name;
-            winTitle.textContent = "獲得勝利！";
-        } else {
-            winEmoji.textContent = "🤝";
-            winName.textContent = "無人生還";
-            winTitle.textContent = "平手！";
-        }
-        screen.classList.remove('hidden');
+        console.log('🏆 Game over! Waiting 3 seconds before showing victory screen');
+        
+        // Show 3-second message before revealing the final screen
+        const status = document.getElementById('game-status');
+        const display = document.getElementById('beat-counter');
+        
+        status.textContent = '遊戲結束...';
+        display.textContent = '...';
+        
+        // Wait 3 seconds
+        setTimeout(() => {
+            const screen = document.getElementById('victory-screen');
+            const winEmoji = document.getElementById('winner-emoji');
+            const winName = document.getElementById('winner-name');
+            const winTitle = document.getElementById('winner-title');
+            
+            if (alive.length === 1) {
+                winEmoji.textContent = alive[0].emoji;
+                winName.textContent = alive[0].name;
+                winTitle.textContent = "獲得勝利！";
+            } else {
+                winEmoji.textContent = "🤝";
+                winName.textContent = "無人生還";
+                winTitle.textContent = "平手！";
+            }
+            screen.classList.remove('hidden');
 
-        // Stop listening to Firebase - clean up all listeners
-        cleanupAllListeners();
+            // Stop listening to Firebase - clean up all listeners
+            cleanupAllListeners();
+        }, 3000);
     } else {
         console.log(`🔄 Game continues, ${alive.length} players alive`);
+        // Reset actions for next turn
+        players.forEach(p => {
+            p.currentAction = null;
+            p.currentTarget = null;
+        });
+        
+        // Notify host to start next turn
+        if (isHost && currentRoomId) {
+            update(ref(database, `rooms/${currentRoomId}/players`), 
+                Object.keys(players).reduce((acc, _, idx) => {
+                    const p = players[idx];
+                    acc[`${p.uid}/currentAction`] = null;
+                    acc[`${p.uid}/currentTarget`] = null;
+                    return acc;
+                }, {})
+            ).catch(err => console.error('Error resetting turn:', err));
+        }
+        
         startTurnCycle();
     }
 }
@@ -1333,9 +1436,8 @@ function leaveRoom() {
         isHost = false;
         readyStatus = false;
 
-        // Return to setup screen
-        document.getElementById('lobby-screen').classList.add('hidden');
-        document.getElementById('setup-screen').classList.remove('hidden');
+        // Return to lobby
+        document.getElementById('lobby-screen').classList.remove('hidden');
         document.getElementById('game-ui').classList.add('hidden');
         document.getElementById('room-info-panel').classList.add('hidden');
         document.getElementById('created-room-info').classList.add('hidden');
@@ -1348,6 +1450,31 @@ function leaveRoom() {
 // ============================================================
 // LOBBY EVENT LISTENERS
 // ============================================================
+
+// Freeze or unfreeze all lobby input controls
+function setLobbyInputsDisabled(disabled) {
+    // Disable/enable player count slider
+    const playerCountSlider = document.getElementById('player-count-lobby');
+    if (playerCountSlider) playerCountSlider.disabled = disabled;
+    
+    // Disable/enable timer setting slider
+    const timerSlider = document.getElementById('timer-setting-lobby');
+    if (timerSlider) timerSlider.disabled = disabled;
+    
+    // Disable/enable all nickname inputs
+    const nicknameInputs = document.querySelectorAll('.p-nick-lobby');
+    nicknameInputs.forEach(input => {
+        input.disabled = disabled;
+    });
+    
+    // Disable/enable all type dropdowns
+    const typeDropdowns = document.querySelectorAll('.p-type-lobby');
+    typeDropdowns.forEach(dropdown => {
+        dropdown.disabled = disabled;
+    });
+    
+    console.log(`🔒 Lobby inputs ${disabled ? 'frozen' : 'unfrozen'}`);
+}
 
 async function handlePlayerTypeChange(playerIdx, newType) {
     // If not in a room yet, just ignore (will be handled on game start)
@@ -1397,82 +1524,203 @@ function updateLobbyPlayerConfigList() {
     const listDiv = document.getElementById('player-config-list-lobby');
     if (!listDiv) return; // Only runs if in lobby
     
-    listDiv.innerHTML = '';
-    for (let i = 0; i < count; i++) {
-        const div = document.createElement('div');
-        div.className = 'flex justify-between items-center bg-gray-800/50 p-3 rounded-xl border border-gray-700 mb-2';
-        div.innerHTML = `
-            <div class="flex items-center gap-3">
-                <span class="text-2xl">${emojis[i]}</span>
-                <input type="text" class="nickname-input-lobby p-nick-lobby" data-idx="${i}" value="玩家 ${i+1}" maxlength="8" class="bg-gray-700 rounded text-white p-1 text-sm">
-            </div>
-            <select class="bg-gray-700 rounded-lg text-xs font-black px-3 py-2 p-type-lobby uppercase" data-idx="${i}">
-                <option value="human" ${i===0?'selected':''}>真人</option>
-                <option value="ai" ${i!==0?'selected':''}>電腦 AI</option>
-            </select>
-        `;
-        listDiv.appendChild(div);
-    }
+    // Get current players from Firebase
+    const getPlayersFromRoom = async () => {
+        if (!currentRoomId || !isHost) return {};
+        try {
+            const snap = await get(ref(database, `rooms/${currentRoomId}/players`));
+            return snap.exists() ? snap.val() : {};
+        } catch (_) {
+            return {};
+        }
+    };
     
-    // Add change listeners to dropdowns
-    const dropdowns = listDiv.querySelectorAll('.p-type-lobby');
-    dropdowns.forEach(dropdown => {
-        dropdown.addEventListener('change', (e) => {
-            const playerIdx = parseInt(e.target.getAttribute('data-idx'));
-            const newType = e.target.value;
-            handlePlayerTypeChange(playerIdx, newType);
+    getPlayersFromRoom().then(playersFromRoom => {
+        // Preserve host's current input value BEFORE clearing the div
+        const existingHostInput = listDiv.querySelector('input[data-idx="0"]');
+        const hostCurrentValue = existingHostInput ? existingHostInput.value : `玩家 1`;
+        
+        listDiv.innerHTML = '';
+        
+        // Build a map of human players by their position (excluding host and AI)
+        const humanPlayers = Object.entries(playersFromRoom || {})
+            .filter(([uid, p]) => p && p.type !== 'ai' && uid !== currentUser.uid)
+            .map(([uid, p]) => ({ uid, data: p }));
+        
+        let humanIndex = 0;
+        
+        for (let i = 0; i < count; i++) {
+            const div = document.createElement('div');
+            div.className = 'flex justify-between items-center bg-gray-800/50 p-3 rounded-xl border border-gray-700 mb-2';
+            
+            // Slot 0 is always the host
+            if (i === 0) {
+                // Host slot - always editable, using preserved value
+                div.innerHTML = `
+                    <div class="flex items-center gap-3">
+                        <span class="text-2xl">${emojis[i]}</span>
+                        <input type="text" class="nickname-input-lobby p-nick-lobby bg-gray-800 border border-gray-700 text-white p-3 rounded-xl tracking-widest text-center font-black text-sm" data-idx="${i}" value="${hostCurrentValue}" maxlength="8">
+                    </div>
+                    <div class="text-xs font-black px-3 py-2 text-green-400">真人 (主機)</div>
+                `;
+            } else if (humanIndex < humanPlayers.length) {
+                // Real client player slot - locked display with kick button
+                const player = humanPlayers[humanIndex];
+                const uid = player.uid;
+                const playerData = player.data;
+                
+                div.className = 'flex justify-between items-center bg-blue-900/30 p-3 rounded-xl border-2 border-blue-600 mb-2';
+                div.innerHTML = `
+                    <div class="flex items-center gap-3">
+                        <span class="text-2xl">${playerData.emoji}</span>
+                        <div class="flex flex-col">
+                            <p class="text-white font-bold text-sm">${playerData.name}</p>
+                            <p class="text-[10px] text-gray-400">真人 (已加入)</p>
+                        </div>
+                    </div>
+                    <button class="bg-red-600 hover:bg-red-500 text-white px-3 py-2 rounded-lg text-xs font-bold transition-colors kick-player-btn" data-uid="${uid}">
+                        踢出
+                    </button>
+                `;
+                humanIndex++;
+            } else {
+                // Empty configured slot - editable for AI
+                div.innerHTML = `
+                    <div class="flex items-center gap-3">
+                        <span class="text-2xl">${emojis[i]}</span>
+                        <input type="text" class="nickname-input-lobby p-nick-lobby bg-gray-800 border border-gray-700 text-white p-3 rounded-xl tracking-widest text-center font-black text-sm" data-idx="${i}" value="玩家 ${i+1}" maxlength="8" placeholder="玩家名稱">
+                    </div>
+                    <select class="bg-gray-700 rounded-lg text-xs font-black px-3 py-2 p-type-lobby uppercase" data-idx="${i}">
+                        <option value="human">真人</option>
+                        <option value="ai" selected>電腦 AI</option>
+                    </select>
+                `;
+            }
+            
+            listDiv.appendChild(div);
+        }
+        
+        // Add kick button listeners
+        const kickButtons = listDiv.querySelectorAll('.kick-player-btn');
+        kickButtons.forEach(btn => {
+            btn.addEventListener('click', async (e) => {
+                const uid = e.target.getAttribute('data-uid');
+                if (!confirm('確定要踢出此玩家嗎？')) return;
+                try {
+                    await remove(ref(database, `rooms/${currentRoomId}/players/${uid}`));
+                    console.log(`✅ Kicked player ${uid}`);
+                    updateLobbyPlayerConfigList(); // Refresh the list
+                } catch (error) {
+                    console.error('❌ Error kicking player:', error);
+                }
+            });
         });
+        
+        // Add change listeners to nickname inputs to sync to Firebase
+        const nicknameInputs = listDiv.querySelectorAll('.p-nick-lobby');
+        nicknameInputs.forEach(input => {
+            input.addEventListener('change', async (e) => {
+                const playerIdx = parseInt(e.target.getAttribute('data-idx'));
+                const newName = e.target.value || `玩家 ${playerIdx+1}`;
+                
+                // If this is the host's player slot (index 0), update host's Firebase player data
+                if (isHost && playerIdx === 0 && currentRoomId && currentUser) {
+                    try {
+                        await update(ref(database, `rooms/${currentRoomId}/players/${currentUser.uid}`), {
+                            name: newName
+                        });
+                        console.log(`✅ HOST: Updated own name to "${newName}"`);
+                    } catch (error) {
+                        console.error('❌ Error updating host name:', error);
+                    }
+                }
+            });
+        });
+        
+        // Add change listeners to dropdowns
+        const dropdowns = listDiv.querySelectorAll('.p-type-lobby');
+        dropdowns.forEach(dropdown => {
+            dropdown.addEventListener('change', (e) => {
+                const playerIdx = parseInt(e.target.getAttribute('data-idx'));
+                const newType = e.target.value;
+                handlePlayerTypeChange(playerIdx, newType);
+            });
+        });
+        
+        // Apply disabled state if already ready
+        if (readyStatus && isHost) {
+            setLobbyInputsDisabled(true);
+        }
     });
 }
 
-document.getElementById('player-count-lobby').addEventListener('input', async () => {
-    document.getElementById('player-count-val-lobby').textContent = document.getElementById('player-count-lobby').value;
-    updateLobbyPlayerConfigList();
-    
-    // Clean up AI players that are no longer needed when player count decreases
-    if (currentRoomId && isHost) {
-        const newPlayerCount = parseInt(document.getElementById('player-count-lobby').value);
-        const playersRef = ref(database, `rooms/${currentRoomId}/players`);
-        const snapshot = await get(playersRef);
-        const playersData = snapshot.val() || {};
+const playerCountLobby = document.getElementById('player-count-lobby');
+const timerSettingLobby = document.getElementById('timer-setting-lobby');
+
+if (playerCountLobby) {
+    playerCountLobby.addEventListener('input', async () => {
+        document.getElementById('player-count-val-lobby').textContent = playerCountLobby.value;
+        updateLobbyPlayerConfigList();
         
-        // Remove any AI players with indices >= newPlayerCount
-        for (let i = 0; i < 8; i++) {  // Max 8 players
-            if (i >= newPlayerCount) {
-                const aiUid = `ai-${i}`;
-                if (playersData[aiUid]) {
-                    try {
-                        await remove(ref(database, `rooms/${currentRoomId}/players/${aiUid}`));
-                        console.log(`🗑️  Removed excess AI player ai-${i}`);
-                    } catch (error) {
-                        console.error(`❌ Error removing AI player ai-${i}:`, error);
+        // Clean up AI players that are no longer needed when player count decreases
+        if (currentRoomId && isHost) {
+            const newPlayerCount = parseInt(playerCountLobby.value);
+            const playersRef = ref(database, `rooms/${currentRoomId}/players`);
+            const snapshot = await get(playersRef);
+            const playersData = snapshot.val() || {};
+            
+            // Remove any AI players with indices >= newPlayerCount
+            for (let i = 0; i < 8; i++) {  // Max 8 players
+                if (i >= newPlayerCount) {
+                    const aiUid = `ai-${i}`;
+                    if (playersData[aiUid]) {
+                        try {
+                            await remove(ref(database, `rooms/${currentRoomId}/players/${aiUid}`));
+                            console.log(`🗑️  Removed excess AI player ai-${i}`);
+                        } catch (error) {
+                            console.error(`❌ Error removing AI player ai-${i}:`, error);
+                        }
                     }
                 }
             }
         }
-    }
-});
+    });
+}
 
-document.getElementById('timer-setting-lobby').addEventListener('input', () => {
-    document.getElementById('timer-val-lobby').textContent = document.getElementById('timer-setting-lobby').value;
-});
+if (timerSettingLobby) {
+    timerSettingLobby.addEventListener('input', () => {
+        document.getElementById('timer-val-lobby').textContent = timerSettingLobby.value;
+    });
+}
 
 // Initialize lobby player config list on page load
-updateLobbyPlayerConfigList();
+if (document.getElementById('player-config-list-lobby')) {
+    updateLobbyPlayerConfigList();
+}
 
-document.getElementById('create-room-btn').addEventListener('click', createRoom);
-document.getElementById('join-room-btn').addEventListener('click', joinRoom);
-document.getElementById('ready-btn-host').addEventListener('click', markPlayerReady);
-document.getElementById('ready-btn-client').addEventListener('click', markPlayerReady);
-document.getElementById('start-game-btn-host').addEventListener('click', startGameAsHost);
-document.getElementById('leave-room-btn').addEventListener('click', leaveRoom);
+const createRoomBtn = document.getElementById('create-room-btn');
+const joinRoomBtn = document.getElementById('join-room-btn');
+const readyBtnHost = document.getElementById('ready-btn-host');
+const readyBtnClient = document.getElementById('ready-btn-client');
+const startGameBtnHost = document.getElementById('start-game-btn-host');
+const leaveRoomBtn = document.getElementById('leave-room-btn');
+const joinRoomInput = document.getElementById('join-room-input');
+
+if (createRoomBtn) createRoomBtn.addEventListener('click', createRoom);
+if (joinRoomBtn) joinRoomBtn.addEventListener('click', joinRoom);
+if (readyBtnHost) readyBtnHost.addEventListener('click', markPlayerReady);
+if (readyBtnClient) readyBtnClient.addEventListener('click', markPlayerReady);
+if (startGameBtnHost) startGameBtnHost.addEventListener('click', startGameAsHost);
+if (leaveRoomBtn) leaveRoomBtn.addEventListener('click', leaveRoom);
 
 // Allow Enter key to join room
-document.getElementById('join-room-input').addEventListener('keyup', (e) => {
-    if (e.key === 'Enter') {
-        joinRoom();
-    }
-});
+if (joinRoomInput) {
+    joinRoomInput.addEventListener('keyup', (e) => {
+        if (e.key === 'Enter') {
+            joinRoom();
+        }
+    });
+}
 
 // Firebase configuration
 const firebaseConfig = {
@@ -1497,7 +1745,6 @@ signInAnonymously(auth)
     console.log('Anonymous user UID:', currentUser.uid);
     
     // Show lobby screen by default
-    document.getElementById('setup-screen').classList.add('hidden');
     document.getElementById('lobby-screen').classList.remove('hidden');
   })
   .catch((error) => {

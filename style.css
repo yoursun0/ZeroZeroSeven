@@ -28,6 +28,7 @@ body.playing {
     box-sizing: border-box;
     background-color: #121212;
     z-index: 50;
+    overflow: visible;
 }
 
 .arena-wrapper {
@@ -39,6 +40,7 @@ body.playing {
     display: flex;
     align-items: center;
     justify-content: center;
+    overflow: visible;
 }
 
 .player-node {
